@@ -11,5 +11,9 @@ jobs:
       - name: do-while-not-queued step
         uses: ./ # Uses an action in the root directory
         with:
-          commandLine: 'echo'
-          args: '"Hello from do while not queued"'
+          commandLine: 'pwsh'
+          args: '-command;Start-Sleep -Seconds 2'
+          workflow: ${{ github.WORKFLOW }}
+          maxRuns: 15
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -20,6 +20,13 @@ inputs:
     description: 'How details the output should be. 0 = None, 1 = Count, 2 = Full'
     required: true
     default: "2"
+  workflow:
+    description: 'The workflow to look for.  And should be set as workflow: github.WORKFLOW '
+    required: true
+  maxRuns:
+    description: 'The max number of times to run the command, set < 1 to just keep going'
+    required: true
+    default: "1000"
 runs:
   using: 'node12'
   main: 'dist/index.js'
