@@ -1,0 +1,25 @@
+name: 'Do While Not Queued'
+description: 'Repetitively execute the specified command until the specified action is queued'
+inputs:
+  commandLine:
+    description: 'This command to run'
+    required: true
+  args:
+    description: 'Arguments to the command can be listed here, multiple arguments can be separated with argsSeparator'
+    required: true
+    default: ''
+  argsSeparator:
+    description: 'Used to delineate where one argument end and the next starts'
+    required: true
+    default: ';'
+  checkEvery:
+    description: 'Use to control how often it will check see if any item has been queued'
+    required: true
+    default: "1"
+  detailLevel:
+    description: 'How details the output should be. 0 = None, 1 = Count, 2 = Full'
+    required: true
+    default: "2"
+runs:
+  using: 'node12'
+  main: 'dist/index.js'
