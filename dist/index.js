@@ -376,9 +376,9 @@ async function run() {
         const owner = github.context.payload.repository.owner.name;
         const repo = github.context.payload.repository.name;
 
+        var count = 0;
         while (true)
         {
-            var count = 0;
             for (var i = 0; i < checkEvery; i++) {
                 count++;
 
@@ -394,7 +394,7 @@ async function run() {
 
                 if (detailLevel > 0)
                 {
-                    console.log(`Starting ${i}`);
+                    console.log(`Starting ${count}`);
                 }
                 await exec.exec(commandLine, argumentsToPass, options);
             }
