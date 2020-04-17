@@ -394,7 +394,7 @@ async function run() {
 
                 if (detailLevel > 0)
                 {
-                    console.log(`Starting ${count}`);
+                    console.log(`Starting ${i}`);
                 }
                 await exec.exec(commandLine, argumentsToPass, options);
             }

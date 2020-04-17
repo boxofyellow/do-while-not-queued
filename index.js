@@ -4,7 +4,6 @@ const github = require('@actions/github');
 const { Octokit } = require('@octokit/action');
 const octokit = new Octokit()
 
-
 async function run() {
     try {
         const commandLine = core.getInput('commandLine');
@@ -70,7 +69,7 @@ async function run() {
 
                 if (detailLevel > 0)
                 {
-                    console.log(`Starting ${count}`);
+                    console.log(`Starting ${i}`);
                 }
                 await exec.exec(commandLine, argumentsToPass, options);
             }
