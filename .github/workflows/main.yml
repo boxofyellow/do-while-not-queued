@@ -12,7 +12,6 @@ jobs:
           args: 'hello-world'
           workflow: ${{ github.WORKFLOW }}
           maxRuns: 3
-          detailLevel: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # To use this repository's private action, you must check out the repository
@@ -26,4 +25,5 @@ jobs:
           workflow: ${{ github.WORKFLOW }}
           maxRuns: 7
           maxTimeSec: 10
+          detailLevel: 2
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

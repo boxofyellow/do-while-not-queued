@@ -65,9 +65,8 @@ async function run() {
             argumentsToPass = args.split(separator);
         }
 
-        const options = {};
-        options.listeners = {
-            silent: detailLevel > 1
+        const options = {
+            silent: detailLevel < 2
         };
 
         const owner = github.context.payload.repository.owner.name;

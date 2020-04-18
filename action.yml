@@ -19,7 +19,7 @@ inputs:
   detailLevel:
     description: 'How details the output should be. 0 = None, 1 = Count, 2 = Full'
     required: true
-    default: "2"
+    default: "1"
   workflow:
     description: 'The workflow to look for.  And should be set as workflow: dollar-dollar{{ github.WORKFLOW }}'
     required: true
