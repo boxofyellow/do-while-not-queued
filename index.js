@@ -4,6 +4,28 @@ const github = require('@actions/github');
 const { Octokit } = require('@octokit/action');
 const octokit = new Octokit()
 
+function getIntegerInput(core, name, min = null, max = null) {
+    const raw = core.getInput(name);
+    const result = Number(raw);
+
+    if (Number.isNaN(result) || !Number.isInteger(result)) {
+        core.setFailed(`${name} needs to be a an integer, found ${raw}`);
+        return null;
+    }
+
+    if (min !== null && result < min) {
+        core.setFailed(`${name} needs to be greater than or equal to ${min}, found ${raw}`);
+        return null;
+    }
+
+    if (max !== null && result > max) {
+        core.setFailed(`${name} needs to be greater than or equal to ${max}, found ${raw}`);
+        return null;
+    }
+
+    return result;
+}
+
 async function run() {
     try {
         const commandLine = core.getInput('commandLine');
@@ -11,45 +33,35 @@ async function run() {
         const separator = core.getInput('argsSeparator');
         const workflow = core.getInput('workflow');
 
-        console.log(`Looking for workflow: ${workflow}`);
-
-        const checkEveryRaw = core.getInput('checkEvery');
-        var checkEvery = Number(checkEveryRaw);
-        if (Number.isNaN(checkEvery) || !Number.isInteger(checkEvery) || checkEvery < 1)
-        {
-            core.setFailed(`checkEvery needs to be an integer, grater than 0, found ${checkEveryRaw}`);
+        const checkEvery = getIntegerInput(core, 'checkEvery', 1);
+        if (checkEvery === null) {
             return;
         }
 
-        const detailLevelRaw = core.getInput('detailLevel');
-        var detailLevel = Number(detailLevelRaw);
-        if (Number.isNaN(detailLevel) || !Number.isInteger(detailLevel) || detailLevel < 0 || detailLevel > 2)
-        {
-            core.setFailed(`detailLevel needs to be an integer, grater than or equal to 0 and less then or equal to 2, found ${detailLevelRaw}`);
+        const detailLevel = getIntegerInput(core, 'detailLevel', 0, 2);
+        if (detailLevel === null) {
             return;
         }
 
-        const maxRunsRaw = core.getInput('maxRuns');
-        var maxRuns = Number(maxRunsRaw);
-        if (Number.isNaN(maxRuns) || !Number.isInteger(maxRuns))
-        {
-            core.setFailed(`maxRuns needs to be an integer, found ${maxRunsRaw}`);
+        const maxRuns = getIntegerInput(core, 'maxRuns');
+        if (maxRuns === null) {
             return;
         }
 
-        const maxTimeSecRaw = core.getInput('maxTimeSec');
-        var maxTimeSec = Number(maxTimeSecRaw);
-        if (Number.isNaN(maxTimeSec) || !Number.isInteger(maxTimeSec))
-        {
-            core.setFailed(`maxTimeSec needs to be an integer, found ${maxTimeSecRaw}`);
+        const maxTimeSec = getIntegerInput(core, 'maxTimeSec');
+        if (maxTimeSec === null) {
             return;
         }
+
         const startTime = new Date().getTime(); 
         const endTime = startTime + (maxTimeSec * 1000);
 
+        if (detailLevel > 0) {
+            console.log(`Looking for workflow: ${workflow}`);
+        }
+
         var argumentsToPass = null;
-        if (args)
-        {
+        if (args) {
             argumentsToPass = args.split(separator);
         }
 
@@ -62,29 +74,26 @@ async function run() {
         const repo = github.context.payload.repository.name;
 
         var count = 0;
-        while (true)
-        {
+        while (true) {
             for (var i = 0; i < checkEvery; i++) {
                 count++;
 
-                if (maxRuns > 0 && count > maxRuns)
-                {
+                if (maxRuns > 0 && count > maxRuns) {
                     console.log(`Reached ${count}`);
                     return;
                 }
 
                 var now = new Date().getTime();
-                if (maxTimeSec > 0 && (now > endTime))
-                {
+                if (maxTimeSec > 0 && (now > endTime)) {
                     var ranFor = (now - startTime) / 1000;
                     console.log(`Ran for ${ranFor}s`);
                     return;
                 }
 
-                if (detailLevel > 0)
-                {
+                if (detailLevel > 0) {
                     console.log(`Starting ${count}`);
                 }
+
                 await exec.exec(commandLine, argumentsToPass, options);
             }
 
@@ -95,17 +104,14 @@ async function run() {
                 status: 'queued'
             });
 
-            if (result.status !== 200)
-            {
+            if (result.status !== 200) {
                 const payload = JSON.stringify(result, undefined, 2);
                 core.setFailed(`Failed to read runs: ${payload}`);
                 return;
             }
 
-            if (result.data.total_count > 0)
-            {
-                if (detailLevel > 1)
-                {
+            if (result.data.total_count > 0) {
+                if (detailLevel > 1) {
                     const payload = JSON.stringify(result, undefined, 2);
                     console.log(`Found at least queued item: ${payload}`);
                 }
