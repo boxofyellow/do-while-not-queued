@@ -408,18 +408,22 @@ async function run() {
                     return;
                 }
 
+                if (detailLevel > 0) {
+                    console.log(`Starting ${count}`);
+                }
+
+                var exitCode = await exec.exec(commandLine, argumentsToPass, options);
+                if (exitCode !== 0)
+                {
+                    console.setFailed(`Got a non-zero exit code ${exitCode}`);
+                }
+
                 var now = new Date().getTime();
                 if (maxTimeSec > 0 && (now > endTime)) {
                     var ranFor = (now - startTime) / 1000;
                     console.log(`Ran for ${ranFor}s`);
                     return;
                 }
-
-                if (detailLevel > 0) {
-                    console.log(`Starting ${count}`);
-                }
-
-                await exec.exec(commandLine, argumentsToPass, options);
             }
 
             var result = await octokit.actions.listRepoWorkflowRuns({

@@ -1,5 +1,5 @@
 name: 'Do While Not Queued'
-description: 'Repetitively execute the specified command until the specified action is queued'
+description: 'Repetitively execute the specified command until the specified workflow is queued'
 inputs:
   commandLine:
     description: 'This command to run'
@@ -21,7 +21,7 @@ inputs:
     required: true
     default: "2"
   workflow:
-    description: 'The workflow to look for.  And should be set as workflow: github.WORKFLOW '
+    description: 'The workflow to look for.  And should be set as workflow: dollar-dollar{{ github.WORKFLOW }}'
     required: true
   maxRuns:
     description: 'The max number of times to run the command, set < 1 to just keep going'
@@ -31,6 +31,9 @@ inputs:
     description: 'The max number of second to keep checking, set < 1 to just keep going'
     required: true
     default: "2700" # 45 min, since out token is only good for 1 hour.  This buys us some wiggle room
+  GITHUB_TOKEN: 
+    description: 'The Token that has read access to Actions REST API.  And should be set as GITHUB_TOKEN: dollar-dollar{{ secrets.GITHUB_TOKEN }}'
+    required: true
 runs:
   using: 'node12'
   main: 'dist/index.js'

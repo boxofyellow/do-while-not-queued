@@ -16,5 +16,4 @@ jobs:
           workflow: ${{ github.WORKFLOW }}
           maxRuns: 7
           maxTimeSec: 10
-        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
