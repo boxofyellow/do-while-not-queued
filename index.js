@@ -17,7 +17,7 @@ async function run() {
         var checkEvery = Number(checkEveryRaw);
         if (Number.isNaN(checkEvery) || !Number.isInteger(checkEvery) || checkEvery < 1)
         {
-            core.setFailed(`checkEvery needs to be a integer, grater than 0, found ${checkEveryRaw}`);
+            core.setFailed(`checkEvery needs to be an integer, grater than 0, found ${checkEveryRaw}`);
             return;
         }
 
@@ -25,7 +25,7 @@ async function run() {
         var detailLevel = Number(detailLevelRaw);
         if (Number.isNaN(detailLevel) || !Number.isInteger(detailLevel) || detailLevel < 0 || detailLevel > 2)
         {
-            core.setFailed(`detailLevel needs to be a integer, grater than or equal to 0 and less then or equal to 2, found ${detailLevelRaw}`);
+            core.setFailed(`detailLevel needs to be an integer, grater than or equal to 0 and less then or equal to 2, found ${detailLevelRaw}`);
             return;
         }
 
@@ -33,9 +33,19 @@ async function run() {
         var maxRuns = Number(maxRunsRaw);
         if (Number.isNaN(maxRuns) || !Number.isInteger(maxRuns))
         {
-            core.setFailed(`maxRuns needs to be a integer, found ${maxRunsRaw}`);
+            core.setFailed(`maxRuns needs to be an integer, found ${maxRunsRaw}`);
             return;
         }
+
+        const maxTimeSecRaw = core.getInput('maxTimeSec');
+        var maxTimeSec = Number(maxTimeSecRaw);
+        if (Number.isNaN(maxTimeSec) || !Number.isInteger(maxTimeSec))
+        {
+            core.setFailed(`maxTimeSec needs to be an integer, found ${maxTimeSecRaw}`);
+            return;
+        }
+        const startTime = new Date().getTime(); 
+        const endTime = startTime + (maxTimeSec * 1000);
 
         var argumentsToPass = null;
         if (args)
@@ -59,11 +69,15 @@ async function run() {
 
                 if (maxRuns > 0 && count > maxRuns)
                 {
-                    if (detailLevel > 0)
-                    {
-                        console.log(`Reached ${count}`);
-                        return;
-                    }
+                    console.log(`Reached ${count}`);
+                    return;
+                }
+
+                var now = new Date().getTime();
+                if (maxTimeSec > 0 && (now > endTime))
+                {
+                    var ranFor = (now - startTime) / 1000;
+                    console.log(`Ran for ${ranFor}s`);
                     return;
                 }
 
