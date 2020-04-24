@@ -37,10 +37,10 @@ while(true)
 ```
 
 A few things to note:
-1. You can use this to create run go for a long time, and inturn consume a lot of your compute resources, so consider using this with Self-Hosted runners
+1. You can use this to create runs that go for a long time, and inturn consume a lot of your compute resources, so consider using this with Self-Hosted runners
 1. To perform various operations (like check if a new instance of this workflow has been queued) requires a valid token required.  The one that is provided when the job starts is only good for 1 hour.  So keep that in mind when selecting max-time-seconds.  To work around this you can prevision your own PAT, and add it as a secret and provide that.
 1. While on the topic of max-time-seconds, no timeout is imposed on your command, this only controls how long the action will look for queued items, you need to ensure your command will complete in a reasonable about of time.
-1. Your command will have access to all Environment variables that are available to action by default, plus any that add tp `env:` 
+1. Your command will have access to all Environment variables that are available to actions by default, plus any that add to `env:` 
 
 # Example Usage
 
