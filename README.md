@@ -7,18 +7,18 @@ You can think of this as operating with the follow pseudocode
 
 ```
 count = 0
-endTime = [nowSec] + [$maxTimeSec: default = 2700]
+endTime = [now-sec] + [$max-time-seconds: default = 2700]
 while(true)
 {
-    for (i = 0; i < [$checkEvery: default = 1] ;i++)
+    for (i = 0; i < [$check-every: default = 1] ;i++)
     {
         count++
-        if (count > [$maxRuns: default = 1000])
+        if (count > [$max-runs: default = 1000])
         {
             return
         }
 
-        if (Run [$commandLine] With [$args] Does Not yield Exit Code 0)
+        if (Run [$command-line] With [$args] Does Not yield Exit Code 0)
         {
             return
         }
@@ -38,9 +38,9 @@ while(true)
 
 A few things to note:
 1. You can use this to create run go for a long time, and inturn consume a lot of your compute resources, so consider using this with Self-Hosted runners
-1. To perform various operations (like check if a new instance of this workflow has been queued) a valid token required.  The one that is provided when the job starts is only good for 1 hour.  So keep that in mind when selecting maxTimeSec
-1. While on the topic of maxTimeSec, no time out is imposed on your command, this only controls how long the action will look queued items, you need to ensure your command will complete in a reasonable about of time.
-1. Your command will have access to all Environment variables 
+1. To perform various operations (like check if a new instance of this workflow has been queued) requires a valid token required.  The one that is provided when the job starts is only good for 1 hour.  So keep that in mind when selecting max-time-seconds.  To work around this you can prevision your own PAT, and add it as a secret and provide that.
+1. While on the topic of max-time-seconds, no timeout is imposed on your command, this only controls how long the action will look for queued items, you need to ensure your command will complete in a reasonable about of time.
+1. Your command will have access to all Environment variables that are available to action by default, plus any that add tp `env:` 
 
 # Example Usage
 
@@ -48,15 +48,15 @@ A few things to note:
 uses: boxofyellow/do-while-not-queued@v1
 with:
     # Start up powershell
-    commandLine: 'pwsh'
+    command-line: 'pwsh'
     # Pass it two parameter -command Start-Sleep -Second 2
     args: '-command;Start-Sleep -Seconds 2'
     # Use the provided git hub variable for the work flow
     workflow: ${{ github.WORKFLOW }}
     # Run this for at most 7 iterations
-    maxRuns: 7
+    max-runs: 7
     # If it runs for more then 10 second, stop checking for new instances and exit
-    maxTimeSec: 10
+    max-time-seconds: 10
     # Use the provided git hub variable
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
