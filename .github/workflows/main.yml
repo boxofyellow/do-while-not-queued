@@ -5,25 +5,24 @@ jobs:
     runs-on: ubuntu-latest
     name: do-while-not-queued
     steps:
-      - name: Run v1
-        uses: boxofyellow/do-while-not-queued@v1.0.2-beta
-        with:
-          commandLine: 'echo'
-          args: 'hello-world'
-          workflow: ${{ github.WORKFLOW }}
-          maxRuns: 3
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      # - name: Run v1
+      #  uses: boxofyellow/do-while-not-queued@v1.0.2-beta
+      #  with:
+      #    command-line: 'echo'
+      #    args: 'hello-world'
+      #    workflow: ${{ github.WORKFLOW }}
+      #    max-runs: 3
+      #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # To use this repository's private action, you must check out the repository
       - name: Checkout
         uses: actions/checkout@v2
       - name: do-while-not-queued step
         uses: ./ # Uses an action in the root directory
         with:
-          commandLine: 'pwsh'
+          command-line: 'pwsh'
           args: '-command;Start-Sleep -Seconds 2'
           workflow: ${{ github.WORKFLOW }}
           maxRuns: 7
-          maxTimeSec: 10
-          detailLevel: 2
+          max-time-seconds: 10
+          detail-level: 2
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

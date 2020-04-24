@@ -353,27 +353,27 @@ function getIntegerInput(core, name, min = null, max = null) {
 
 async function run() {
     try {
-        const commandLine = core.getInput('commandLine');
+        const commandLine = core.getInput('command-line');
         const args = core.getInput('args');
-        const separator = core.getInput('argsSeparator');
+        const separator = core.getInput('args-separator');
         const workflow = core.getInput('workflow');
 
-        const checkEvery = getIntegerInput(core, 'checkEvery', 1);
+        const checkEvery = getIntegerInput(core, 'check-every', 1);
         if (checkEvery === null) {
             return;
         }
 
-        const detailLevel = getIntegerInput(core, 'detailLevel', 0, 2);
+        const detailLevel = getIntegerInput(core, 'detail-level', 0, 2);
         if (detailLevel === null) {
             return;
         }
 
-        const maxRuns = getIntegerInput(core, 'maxRuns');
+        const maxRuns = getIntegerInput(core, 'max-runs');
         if (maxRuns === null) {
             return;
         }
 
-        const maxTimeSec = getIntegerInput(core, 'maxTimeSec');
+        const maxTimeSec = getIntegerInput(core, 'max-time-seconds');
         if (maxTimeSec === null) {
             return;
         }
