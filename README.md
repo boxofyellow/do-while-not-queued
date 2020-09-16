@@ -1,9 +1,9 @@
 ![.github/workflows/main.yml](https://github.com/boxofyellow/do-while-not-queued/workflows/.github/workflows/main.yml/badge.svg)
 
 # do-while-not-queued
-This action allows repetitively execute the specified command until the specified action is queued.  This can be handy in building a reliability run were you want run the same part of a work flow many times.
+This action allows repetitively executing the specified command until the specified action is queued.  This can be handy in building a reliability run were you want to run the same part of a work flow many times.
 
-You can think of this as operating with the follow pseudocode
+You can think of this as operating with the following pseudocode
 
 ```
 count = 0
@@ -29,7 +29,7 @@ while(true)
         } 
     }
 
-    if (another_run_of_this_workflow_has_been_queue)
+    if (Another Run Of This Workflow Has Been Queue)
     {
         return
     }
@@ -38,8 +38,8 @@ while(true)
 
 A few things to note:
 1. You can use this to create runs that go for a long time, and inturn consume a lot of your compute resources, so consider using this with Self-Hosted runners
-1. To perform various operations (like check if a new instance of this workflow has been queued) requires a valid token required.  The one that is provided when the job starts is only good for 1 hour.  So keep that in mind when selecting max-time-seconds.  To work around this you can prevision your own PAT, and add it as a secret and provide that.
-1. While on the topic of max-time-seconds, no timeout is imposed on your command, this only controls how long the action will look for queued items, you need to ensure your command will complete in a reasonable about of time.
+1. To perform various operations (like check if a new instance of this workflow has been queued) requires a valid token.  The one that is provided when the job starts is only good for 1 hour.  So keep that in mind when selecting max-time-seconds.  To work around this you can prevision your own PAT, and add it as a secret and provide that.
+1. While on the topic of max-time-seconds, no timeout is imposed on your command, this only controls how long the action will look for queued items, you need to ensure your command will complete in a reasonable amount of time.
 1. Your command will have access to all Environment variables that are available to actions by default, plus any that add to `env:` 
 
 # Example Usage
