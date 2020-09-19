@@ -30,7 +30,7 @@ inputs:
   max-time-seconds:
     description: 'The max number of second to keep checking, set < 1 to just keep going'
     required: true
-    default: "2700" # 45 min, since out token is only good for 1 hour.  This buys us some wiggle room
+    default: "3600"  # 1 hour
   GITHUB_TOKEN: 
     description: 'The Token that has read access to Actions REST API.  And should be set as GITHUB_TOKEN: dollar-dollar{{ secrets.GITHUB_TOKEN }}'
     required: true
