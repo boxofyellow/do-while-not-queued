@@ -57,4 +57,6 @@ with:
     max-runs: 7
     # If it runs for more then 10 second, stop checking for new instances and exit
     max-time-seconds: 10
+    # Use the provided git hub variable
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
