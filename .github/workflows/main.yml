@@ -5,8 +5,17 @@ jobs:
     runs-on: ubuntu-latest
     name: do-while-not-queued
     steps:
-      - name: Run v1
-        uses: boxofyellow/do-while-not-queued@v1.0.4-beta
+      - name: Run v2
+        uses: boxofyellow/do-while-not-queued@v2
+        with:
+          command-line: 'echo'
+          args: 'hello-world'
+          workflow: ${{ github.WORKFLOW }}
+          max-runs: 3
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run latest
+        uses: boxofyellow/do-while-not-queued@v2.0
         with:
           command-line: 'echo'
           args: 'hello-world'
