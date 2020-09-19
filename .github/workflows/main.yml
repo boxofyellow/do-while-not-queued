@@ -12,8 +12,7 @@ jobs:
           args: 'hello-world'
           workflow: ${{ github.WORKFLOW }}
           max-runs: 3
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+
       # To use this repository's private action, you must check out the repository
       - name: Checkout
         uses: actions/checkout@v2
@@ -26,4 +25,3 @@ jobs:
           max-Runs: 7
           max-time-seconds: 10
           detail-level: 2
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
