@@ -5,13 +5,15 @@ jobs:
     runs-on: ubuntu-latest
     name: do-while-not-queued
     steps:
-      - name: Run v1
-        uses: boxofyellow/do-while-not-queued@v1.0.4-beta
-        with:
-          command-line: 'echo'
-          args: 'hello-world'
-          workflow: ${{ github.WORKFLOW }}
-          max-runs: 3
+      # it looks like after I changed name of the main branch it broke our old releases
+      #
+      #- name: Run v1
+      #  uses: boxofyellow/do-while-not-queued@v1.0.4-beta
+      #  with:
+      #    command-line: 'echo'
+      #    args: 'hello-world'
+      #    workflow: ${{ github.WORKFLOW }}
+      #    max-runs: 3
 
       # To use this repository's private action, you must check out the repository
       - name: Checkout
