@@ -2,7 +2,7 @@ name: 'Do While Not Queued'
 description: 'Repetitively execute the specified command until the specified workflow is queued'
 inputs:
   command-line:
-    description: 'This command to run'
+    description: 'The command to run'
     required: true
   args:
     description: 'Arguments to the command can be listed here, multiple arguments can be separated with argsSeparator'
