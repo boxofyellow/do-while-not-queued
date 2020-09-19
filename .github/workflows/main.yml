@@ -27,3 +27,4 @@ jobs:
           max-Runs: 7
           max-time-seconds: 10
           detail-level: 2
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
