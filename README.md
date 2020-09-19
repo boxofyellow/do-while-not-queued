@@ -1,7 +1,7 @@
 ![.github/workflows/main.yml](https://github.com/boxofyellow/do-while-not-queued/workflows/.github/workflows/main.yml/badge.svg)
 
 # do-while-not-queued
-This action allows repetitively executing the specified command until the specified action is queued.  This can be handy in building a reliability run were you want to run the same part of a work flow many times.
+This action allows repetitively executing the specified command until the specified action is queued.  This can be handy in building a reliability run where you want to run the same part of a work flow many times.
 
 You can think of this as operating with the following pseudocode
 
@@ -29,7 +29,7 @@ while(true)
         } 
     }
 
-    if (Another Run Of This Workflow Has Been Queue)
+    if (Was Another Run Of This Workflow Has Been Queue)
     {
         return
     }
@@ -45,7 +45,7 @@ A few things to note:
 # Example Usage
 
 ``` yaml
-uses: boxofyellow/do-while-not-queued@v1
+uses: boxofyellow/do-while-not-queued@v2
 with:
     # Start up powershell
     command-line: 'pwsh'
@@ -55,7 +55,7 @@ with:
     workflow: ${{ github.WORKFLOW }}
     # Run this for at most 7 iterations
     max-runs: 7
-    # If it runs for more then 10 second, stop checking for new instances and exit
+    # If it runs for a total of more than 10 second, stop checking for new instances and exit
     max-time-seconds: 10
     # Use the provided git hub variable
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
