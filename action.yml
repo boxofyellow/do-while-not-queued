@@ -31,6 +31,9 @@ inputs:
     description: 'The max number of second to keep checking, set < 1 to just keep going'
     required: true
     default: "3600"  # 1 hour
+  GITHUB_TOKEN: 
+    description: 'The Token that has read access to Actions REST API.  And should be set as GITHUB_TOKEN: dollar-dollar{{ secrets.GITHUB_TOKEN }}'
+    required: true
 runs:
   using: 'node12'
   main: 'dist/index.js'
