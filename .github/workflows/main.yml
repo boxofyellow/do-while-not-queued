@@ -15,7 +15,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run latest
-        uses: boxofyellow/do-while-not-queued@v2.0.2
+        uses: boxofyellow/do-while-not-queued@v2.0.3
         with:
           command-line: 'echo'
           args: 'hello-world'
