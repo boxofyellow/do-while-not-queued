@@ -329,6 +329,9 @@ const github = __webpack_require__(462);
 const { Octokit } = __webpack_require__(897);
 const octokit = new Octokit()
 
+// After making changes here make sure to compile it into dist with
+// ncc build index.js
+
 function getIntegerInput(core, name, min = null, max = null) {
     const raw = core.getInput(name);
     const result = Number(raw);
@@ -344,7 +347,7 @@ function getIntegerInput(core, name, min = null, max = null) {
     }
 
     if (max !== null && result > max) {
-        core.setFailed(`${name} needs to be greater than or equal to ${max}, found ${raw}`);
+        core.setFailed(`${name} needs to be less than or equal to ${max}, found ${raw}`);
         return null;
     }
 
