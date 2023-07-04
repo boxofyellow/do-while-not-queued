@@ -23,7 +23,7 @@ while(true)
             return
         }
 
-        if ([nowSec] > endTime)
+        if ([now-sec] > endTime)
         {
             return
         } 
