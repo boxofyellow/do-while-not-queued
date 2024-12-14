@@ -103,7 +103,7 @@ async function run() {
                 }
             }
 
-            var result = await octokit.actions.listRepoWorkflowRuns({
+            var result = await octokit.actions.listWorkflowRuns({
                 owner: owner,
                 repo: repo,
                 workflow_file_name: workflow,
