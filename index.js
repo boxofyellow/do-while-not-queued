@@ -103,7 +103,7 @@ async function run() {
                 }
             }
 
-            var result = await octokit.actions.listRepoWorkflowRuns({
+            var result = await octokit.actions.listWorkflowRunsForRepo({
                 owner: owner,
                 repo: repo,
                 workflow_file_name: workflow,
@@ -126,6 +126,7 @@ async function run() {
         }
 
     } catch (error) {
+        console.log(error.stack);
         core.setFailed(error.message);
     }
 }
