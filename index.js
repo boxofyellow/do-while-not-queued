@@ -126,6 +126,7 @@ async function run() {
         }
 
     } catch (error) {
+        console.log(error.stack);
         core.setFailed(error.message);
     }
 }
