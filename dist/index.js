@@ -62368,7 +62368,7 @@ async function run() {
             silent: detailLevel < 2
         };
 
-        const owner = github.context.payload.repository.owner.name;
+        const owner = github.context.payload.repository.owner.login;
         const repo = github.context.payload.repository.name;
 
         var count = 0;
@@ -62398,10 +62398,6 @@ async function run() {
                     return;
                 }
             }
-
-            console.log(`owner: ${owner}`);
-            console.log(`repo: ${repo}`);
-            console.log(`workflow: ${workflow}`);
 
             var result = await octokit.actions.listWorkflowRuns({
                 owner: owner,
