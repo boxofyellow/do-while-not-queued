@@ -62399,6 +62399,10 @@ async function run() {
                 }
             }
 
+            console.log(`owner: ${owner}`);
+            console.log(`repo: ${repo}`);
+            console.log(`workflow: ${workflow}`);
+
             var result = await octokit.actions.listWorkflowRuns({
                 owner: owner,
                 repo: repo,
