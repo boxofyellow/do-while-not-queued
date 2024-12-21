@@ -62368,7 +62368,7 @@ async function run() {
             silent: detailLevel < 2
         };
 
-        const owner = github.context.payload.repository.owner.name;
+        const owner = github.context.payload.repository.owner.login;
         const repo = github.context.payload.repository.name;
 
         var count = 0;
