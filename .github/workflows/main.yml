@@ -5,7 +5,7 @@ on:
       update-dist:
         description: 'Update dist (run ncc build and commit if changed)'
         required: false
-        default: ${{ (startsWith(github.ref, 'refs/heads/dependabot/')) && 'true' || 'false' }}
+        default: 'false'
         type: boolean
 
 jobs:
@@ -39,20 +39,20 @@ jobs:
 
       # Conditional rebuilt dist and commit the changes
       - name: Set up Node.js
-        if: ${{ github.event.inputs.update-dist == 'true' }}
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         uses: actions/setup-node@v4
         with:
           node-version: 12
 
       - name: Install dependencies, ncc and build
-        if: ${{ github.event.inputs.update-dist == 'true' }}
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         run: |
           npm install
           npm i -g @vercel/ncc
           ncc build index.js --license licenses.txt
 
       - name: Check for changes
-        if: ${{ github.event.inputs.update-dist == 'true' }}
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         id: git-check
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -60,7 +60,7 @@ jobs:
           echo "changed=$(git status --porcelain | wc -l)" >> $GITHUB_OUTPUT
 
       - name: Commit and push changes
-        if: ${{ github.event.inputs.update-dist == 'true' && steps.git-check.outputs.changed != '0' }}
+        if: ${{ (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) && steps.git-check.outputs.changed != '0' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
