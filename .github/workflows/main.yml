@@ -8,6 +8,9 @@ on:
         default: 'false'
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   do_while_not_queued:
     runs-on: ubuntu-latest
