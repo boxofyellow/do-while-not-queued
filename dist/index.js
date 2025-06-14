@@ -60177,7 +60177,7 @@ var createTokenAuth = function createTokenAuth2(token) {
 
 
 ;// CONCATENATED MODULE: ./node_modules/@octokit/action/node_modules/@octokit/core/dist-src/version.js
-const version_VERSION = "6.1.5";
+const version_VERSION = "7.0.2";
 
 
 ;// CONCATENATED MODULE: ./node_modules/@octokit/action/node_modules/@octokit/core/dist-src/index.js
@@ -60783,7 +60783,7 @@ paginateRest.VERSION = plugin_paginate_rest_dist_bundle_VERSION;
 
 
 ;// CONCATENATED MODULE: ./node_modules/@octokit/action/node_modules/@octokit/plugin-rest-endpoint-methods/dist-src/version.js
-const dist_src_version_VERSION = "14.0.0";
+const dist_src_version_VERSION = "16.0.0";
 
 //# sourceMappingURL=version.js.map
 
@@ -61259,6 +61259,9 @@ const Endpoints = {
     getGithubBillingUsageReportOrg: [
       "GET /organizations/{org}/settings/billing/usage"
     ],
+    getGithubBillingUsageReportUser: [
+      "GET /users/{username}/settings/billing/usage"
+    ],
     getGithubPackagesBillingOrg: ["GET /orgs/{org}/settings/billing/packages"],
     getGithubPackagesBillingUser: [
       "GET /users/{username}/settings/billing/packages"
@@ -61557,6 +61560,7 @@ const Endpoints = {
     ],
     listCopilotSeats: ["GET /orgs/{org}/copilot/billing/seats"]
   },
+  credentials: { revoke: ["POST /credentials/revoke"] },
   dependabot: {
     addSelectedRepoToOrgSecret: [
       "PUT /orgs/{org}/dependabot/secrets/{secret_name}/repositories/{repository_id}"
