@@ -34,8 +34,6 @@ jobs:
       # To use a local copy of this repository's action, you must check out the repository
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false  
 
       # Conditional rebuilt dist and commit the changes
       - name: Set up Node.js
