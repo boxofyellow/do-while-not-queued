@@ -1,6 +1,12 @@
 on:
   push:
   workflow_dispatch:
+    inputs:
+      update-dist:
+        description: 'Update dist (run ncc build and commit if changed)'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   do_while_not_queued:
@@ -25,9 +31,43 @@ jobs:
           max-runs: 3
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # To use this repository's private action, you must check out the repository
+      # To use a local copy of this repository's action, you must check out the repository
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Conditional rebuilt dist and commit the changes
+      - name: Set up Node.js
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 12
+
+      - name: Install dependencies, ncc and build
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
+        run: |
+          npm install
+          npm i -g @vercel/ncc
+          ncc build index.js --license licenses.txt
+
+      - name: Check for changes
+        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
+        id: git-check
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git status --porcelain
+          echo "changed=$(git status --porcelain | wc -l)" >> $GITHUB_OUTPUT
+
+      - name: Commit and push changes
+        if: ${{ (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) && steps.git-check.outputs.changed != '0' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore: update dist after ncc build"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: do-while-not-queued step
         uses: ./ # Uses an action in the root directory
         with:
