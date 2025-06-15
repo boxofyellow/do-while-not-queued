@@ -2,7 +2,7 @@ name: Keep the versions up-to-date
 
 permissions:
   contents: write
-  workflows: write
+  workflow: write
 
 on:
   release:
