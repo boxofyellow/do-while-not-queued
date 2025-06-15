@@ -40,3 +40,23 @@ jobs:
         with:
           publish_latest_tag: true
           prefer_branch_releases: true
+
+      - name: Update main.yml to match new tags
+        run: |
+          echo "GITHUB_REF: $GITHUB_REF"
+          NEW_VERSION=$(echo "${GITHUB_REF#refs/tags/v}")
+          MAJOR_VERSION=$(echo "$NEW_VERSION" | cut -d. -f1)
+          git fetch origin main
+          git checkout main
+          # First sed: update only FULL_VERSION_TAG, write to main.yml.tmp
+          sed -E "s|(boxofyellow\/do-while-not-queued@).*([[:space:]]+#[[:space:]]+FULL_VERSION_TAG)$|\1v$NEW_VERSION\2|g" .github/workflows/main.yml > .github/workflows/main.yml.tmp
+          cat .github/workflows/main.yml.tmp
+          # Second sed: update only MAJOR_VERSION_TAG, read from main.yml.tmp, write to main.yml
+          sed -E "s|(boxofyellow\/do-while-not-queued@).*([[:space:]]+#[[:space:]]+MAJOR_VERSION_TAG)$|\1v$MAJOR_VERSION\2|g" .github/workflows/main.yml.tmp > .github/workflows/main.yml
+          rm .github/workflows/main.yml.tmp
+          cat .github/workflows/main.yml
+          git add .github/workflows/main.yml
+          git commit -m "chore: Bump CI to $NEW_VERSION"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

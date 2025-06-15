@@ -17,7 +17,7 @@ jobs:
     name: do-while-not-queued
     steps:
       - name: Run v2
-        uses: boxofyellow/do-while-not-queued@v2
+        uses: boxofyellow/do-while-not-queued@v2 # MAJOR_VERSION_TAG
         with:
           command-line: 'echo'
           args: 'hello-world'
@@ -26,7 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run latest
-        uses: boxofyellow/do-while-not-queued@v2.0.18
+        uses: boxofyellow/do-while-not-queued@v2.0.18 # FULL_VERSION_TAG
         with:
           command-line: 'echo'
           args: 'hello-world'
