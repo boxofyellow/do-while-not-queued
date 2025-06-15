@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Ensure we have the full history for versioning
+          token: ${{ secrets.VERSIONING_PAT }}
 
       # First check that the dist is up-to-date
       - name: Set up Node.js
@@ -62,12 +65,11 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git
           git add .github/workflows/main.yml
           git commit -m "chore: Bump CI to $NEW_VERSION"
           git push origin main
         env:
-          GH_PAT: ${{ secrets.VERSIONING_PAT }}
+          GITHUB_TOKEN: ${{ secrets.VERSIONING_PAT }}
 
       # Note we can't really use reusable workflows here, because we need to update the main.yml we just made.
       - name: Queue a run of main.yml
