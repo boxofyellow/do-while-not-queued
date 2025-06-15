@@ -38,30 +38,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Conditional rebuilt dist and commit the changes
+      # Get ready to rebuilt dist
       - name: Set up Node.js
-        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         uses: actions/setup-node@v4
         with:
           node-version: 12
 
       - name: Install dependencies, ncc and build
-        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         run: |
           npm install
           npm i -g @vercel/ncc
           ncc build index.js --license licenses.txt
 
       - name: Check for changes
-        if: ${{ github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/') }}
         id: git-check
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git status --porcelain
           echo "changed=$(git status --porcelain | wc -l)" >> $GITHUB_OUTPUT
 
+      # If there are changes, and this is either a dependabot PR or the update-dist input is true, commit and push the changes
       - name: Commit and push changes
-        if: ${{ (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) && steps.git-check.outputs.changed != '0' }}
+        if: ${{ steps.git-check.outputs.changed != '0' && (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -70,6 +68,12 @@ jobs:
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail if dist is not up to date, and we are not committing changes
+        if: ${{ steps.git-check.outputs.changed != '0' && !(startsWith(github.ref, 'refs/heads/dependabot/')) && github.event.inputs.update-dist != 'true' }}
+        run: |
+          echo "dist is not up to date. Please run the build and commit the changes. If you want to update the dist, please set the update-dist input to true or create a dependabot PR."
+          exit 1
 
       - name: do-while-not-queued step
         uses: ./ # Uses an action in the root directory
