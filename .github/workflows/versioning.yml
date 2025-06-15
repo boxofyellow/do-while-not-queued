@@ -1,5 +1,9 @@
 name: Keep the versions up-to-date
 
+permissions:
+  contents: write
+  workflows: write
+
 on:
   release:
     types: [published, edited]
