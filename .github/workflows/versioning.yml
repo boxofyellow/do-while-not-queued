@@ -1,9 +1,5 @@
 name: Keep the versions up-to-date
 
-permissions:
-  contents: write
-  workflow: write
-
 on:
   release:
     types: [published, edited]
@@ -66,11 +62,12 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git
           git add .github/workflows/main.yml
           git commit -m "chore: Bump CI to $NEW_VERSION"
           git push origin main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.VERSIONING_PAT }}
 
       # Note we can't really use reusable workflows here, because we need to update the main.yml we just made.
       - name: Queue a run of main.yml
