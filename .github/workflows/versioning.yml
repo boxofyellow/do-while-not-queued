@@ -60,3 +60,12 @@ jobs:
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Note we can't really use reusable workflows here, because we need to update the main.yml we just made.
+      - name: Queue a run of main.yml
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: main.yml
+          ref: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

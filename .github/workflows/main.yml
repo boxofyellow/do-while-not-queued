@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     name: do-while-not-queued
     steps:
-      - name: Run v2
+      - name: Run Major
         uses: boxofyellow/do-while-not-queued@v2 # MAJOR_VERSION_TAG
         with:
           command-line: 'echo'
@@ -25,7 +25,7 @@ jobs:
           max-runs: 3
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run latest
+      - name: Run Full Version
         uses: boxofyellow/do-while-not-queued@v2.0.18 # FULL_VERSION_TAG
         with:
           command-line: 'echo'
