@@ -51,7 +51,7 @@ with:
     command-line: 'pwsh'
     # Pass it two parameter -command Start-Sleep -Second 2
     args: '-command;Start-Sleep -Seconds 2'
-    # Use the provided git hub variable for the work flow
+    # Use the provided github variable for the work flow
     workflow: ${{ github.WORKFLOW }}
     # Run this for at most 7 iterations
     max-runs: 7
