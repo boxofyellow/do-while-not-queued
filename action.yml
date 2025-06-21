@@ -35,7 +35,7 @@ inputs:
     description: 'The Token that has read access to Actions REST API.  And should be set as GITHUB_TOKEN: dollar-dollar{{ secrets.GITHUB_TOKEN }}'
     required: true
 runs:
-  using: 'node12'
+  using: 'node20'
   main: 'dist/index.js'
 branding:
   icon: 'aperture'  
