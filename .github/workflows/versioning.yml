@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0  # Ensure we have the full history for versioning
           # Using the VERSIONING_PAT allows updating workflows files, it also means that when we push the main.yml will run for us
