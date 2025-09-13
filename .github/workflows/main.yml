@@ -57,6 +57,9 @@ jobs:
           git status --porcelain
           echo "changed=$(git status --porcelain | wc -l)" >> $GITHUB_OUTPUT
 
+      - name: Log github.ref
+        run: echo '${{ github.ref }}'
+
       # If there are changes, and this is either a dependabot PR or the update-dist input is true, commit and push the changes
       - name: Commit and push changes
         if: ${{ steps.git-check.outputs.changed != '0' && (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) }}
