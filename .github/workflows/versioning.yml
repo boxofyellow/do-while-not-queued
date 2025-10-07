@@ -42,7 +42,7 @@ jobs:
           echo "dist is not up to date. Please run the build and commit the changes."
           exit 1
 
-      - uses: Actions-R-Us/actions-tagger@latest
+      - uses: Actions-R-Us/actions-tagger@c5c6fbf9c8eab415c2d4a5c8c04f5c307f7c6022
         with:
           publish_latest_tag: true
           prefer_branch_releases: true
