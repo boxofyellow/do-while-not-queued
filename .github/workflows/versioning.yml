@@ -1,6 +1,6 @@
 name: Keep the versions up-to-date
 permissions:
-  contents: write
+  contents: write # we need write here, not for `Update main.yml to match new tags` (as that uses its own token), in stead for `Actions-R-Us/actions-tagger`
 
 on:
   release:
