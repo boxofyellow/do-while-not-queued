@@ -26,7 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Full Version
-        uses: boxofyellow/do-while-not-queued@v2.0.29 # FULL_VERSION_TAG
+        uses: boxofyellow/do-while-not-queued@v2.0.31 # FULL_VERSION_TAG
         with:
           command-line: 'echo'
           args: 'hello-world'
