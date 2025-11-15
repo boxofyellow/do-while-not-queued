@@ -14,4 +14,4 @@
 1. That should automatically kick off a run of https://github.com/boxofyellow/do-while-not-queued/actions/workflows/versioning.yml, this will update the needed tags, update `.github/workflows/main.yml`, and then kick off a run of the CI https://github.com/boxofyellow/do-while-not-queued/actions/workflows/main.yml.
 
 # Using the CI main.yaml
-`main.yaml` can be queued manually with an option to rebuild dist and commit the changes back.  This will automatically happen for for dependabot branches.
+`main.yaml` can be queued manually with an option to rebuild dist and commit the changes back.  This will automatically happen for dependabot branches.
