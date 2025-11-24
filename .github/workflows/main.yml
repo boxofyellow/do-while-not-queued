@@ -36,7 +36,7 @@ jobs:
 
       # To use a local copy of this repository's action, you must check out the repository
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # Get ready to rebuilt dist
       - name: Set up Node.js
