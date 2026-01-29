@@ -1,7 +1,7 @@
-const core = require('@actions/core');
-const exec = require('@actions/exec');
-const github = require('@actions/github');
-const { Octokit } = require('@octokit/action');
+import * as core from '@actions/core';
+import * as exec from '@actions/exec';
+import { context } from '@actions/github';
+import { Octokit } from '@octokit/action';
 const octokit = new Octokit()
 
 // After making changes here make sure to compile it into dist with
@@ -72,8 +72,8 @@ async function run() {
             silent: detailLevel < 2
         };
 
-        const owner = github.context.payload.repository.owner.login;
-        const repo = github.context.payload.repository.name;
+        const owner = context.payload.repository.owner.login;
+        const repo = context.payload.repository.name;
 
         var count = 0;
         while (true) {

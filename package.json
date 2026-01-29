@@ -2,6 +2,7 @@
   "name": "do-while-not-queued",
   "version": "2.0.34",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
