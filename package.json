@@ -2,6 +2,7 @@
   "name": "do-while-not-queued",
   "version": "2.0.34",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -20,7 +21,7 @@
   "dependencies": {
     "@actions/core": "^2.0.2",
     "@actions/exec": "^2.0.0",
-    "@actions/github": "^7.0.0",
+    "@actions/github": "^9.0.0",
     "@octokit/action": "^8.0.4"
   }
 }

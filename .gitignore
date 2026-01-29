@@ -66,3 +66,6 @@ typings/
 
 # next.js build output
 .next
+
+# ncc build artifacts
+dist/package.json
