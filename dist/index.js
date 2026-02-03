@@ -70881,7 +70881,7 @@ function getIntegerInput(core, name, min = null, max = null) {
     const result = Number(raw);
 
     if (Number.isNaN(result) || !Number.isInteger(result)) {
-        core.setFailed(`${name} needs to be a an integer, found ${raw}`);
+        core.setFailed(`${name} needs to be an integer, found ${raw}`);
         return null;
     }
 
@@ -70988,7 +70988,7 @@ async function run() {
             if (result.data.total_count > 0) {
                 if (detailLevel > 1) {
                     const payload = JSON.stringify(result, undefined, 2);
-                    console.log(`Found at least queued item: ${payload}`);
+                    console.log(`Found at least one queued item: ${payload}`);
                 }
                 return;
             }
