@@ -15,7 +15,7 @@
 
 The versioning workflow uses a PAT with write access to this repo, it does that so that it can update `main.yml` and can trigger the CI.  That PAT token is defined here
 
-https://github.com/settings/personal-access-tokens/7099984
+https://github.com/settings/personal-access-tokens/7099984 named `do-while-not-queued:versioning workflow`
 
 It has only these Repo permissions
 -  Read access to metadata
