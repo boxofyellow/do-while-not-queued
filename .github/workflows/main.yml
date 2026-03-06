@@ -9,12 +9,16 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  do_while_not_queued:
+  build:
     runs-on: ubuntu-latest
     name: do-while-not-queued
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.git-check.outputs.changed }}
     steps:
       - name: Run Major
         uses: boxofyellow/do-while-not-queued@v2 # MAJOR_VERSION_TAG
@@ -60,18 +64,6 @@ jobs:
       - name: Log github.ref
         run: echo '${{ github.ref }}'
 
-      # If there are changes, and this is either a dependabot PR or the update-dist input is true, commit and push the changes
-      - name: Commit and push changes
-        if: ${{ steps.git-check.outputs.changed != '0' && (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "chore: update dist after ncc build"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Fail if dist is not up to date, and we are not committing changes
         if: ${{ steps.git-check.outputs.changed != '0' && !(startsWith(github.ref, 'refs/heads/dependabot/')) && github.event.inputs.update-dist != 'true' }}
         run: |
@@ -87,4 +79,38 @@ jobs:
           max-Runs: 7
           max-time-seconds: 10
           detail-level: 2
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload dist artifact
+        if: ${{ steps.git-check.outputs.changed != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  commit:
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ needs.build.outputs.changed != '0' && (github.event.inputs.update-dist == 'true' || startsWith(github.ref, 'refs/heads/dependabot/')) }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # If there are changes, and this is either a dependabot PR or the update-dist input is true, commit and push the changes
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/
+          git commit -m "chore: update dist after ncc build"
+          git push
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
