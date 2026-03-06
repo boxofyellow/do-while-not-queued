@@ -7,6 +7,8 @@ const octokit = new Octokit()
 // After making changes here make sure to compile it into dist with
 // ncc build index.js
 
+// Just a test of the new PR flow.
+
 function getIntegerInput(core, name, min = null, max = null) {
     const raw = core.getInput(name);
     const result = Number(raw);
