@@ -81,12 +81,14 @@ jobs:
           detail-level: 2
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload dist artifact
+      - name: Upload dist and package-lock.json artifact
         if: ${{ steps.git-check.outputs.changed != '0' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: dist
-          path: dist/
+          name: dist-and-package-lock
+          path: |
+            dist/
+            package-lock.json
           retention-days: 1 # we don't need to keep these very long at all.
 
   commit:
@@ -99,18 +101,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Download dist artifact
+      - name: Download dist and package-lock.json artifact
         uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          name: dist
-          path: dist/
+          name: dist-and-package-lock
+          path: /tmp/dist-artifact
+
+      - name: Copy dist and package-lock.json into repo
+        run: |
+          cp -r /tmp/dist-artifact/dist ./
+          cp /tmp/dist-artifact/package-lock.json ./
 
       # If there are changes, and this is either a dependabot PR or the update-dist input is true, commit and push the changes
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/
+          git add dist/ package-lock.json
           git commit -m "chore: update dist after ncc build"
           git push
         env:
