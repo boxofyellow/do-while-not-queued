@@ -87,6 +87,7 @@ jobs:
         with:
           name: dist
           path: dist/
+          retention-days: 1 # we don't need to keep these very long at all.
 
   commit:
     runs-on: ubuntu-latest
