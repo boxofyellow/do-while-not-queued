@@ -857,6 +857,7 @@ const BalancedPool = __nccwpck_require__(2392)
 const RoundRobinPool = __nccwpck_require__(5851)
 const Agent = __nccwpck_require__(8280)
 const ProxyAgent = __nccwpck_require__(313)
+const Socks5ProxyAgent = __nccwpck_require__(5480)
 const EnvHttpProxyAgent = __nccwpck_require__(8778)
 const RetryAgent = __nccwpck_require__(7671)
 const H2CClient = __nccwpck_require__(8728)
@@ -885,6 +886,7 @@ __webpack_unused_export__ = BalancedPool
 __webpack_unused_export__ = RoundRobinPool
 __webpack_unused_export__ = Agent
 module.exports.kT = ProxyAgent
+__webpack_unused_export__ = Socks5ProxyAgent
 __webpack_unused_export__ = EnvHttpProxyAgent
 __webpack_unused_export__ = RetryAgent
 __webpack_unused_export__ = H2CClient
@@ -971,10 +973,40 @@ __webpack_unused_export__ = getGlobalDispatcher
 
 const fetchImpl = (__nccwpck_require__(1829).fetch)
 
+// Capture __filename at module load time for stack trace augmentation.
+// This may be undefined when bundled in environments like Node.js internals.
+const currentFilename = typeof __filename !== 'undefined' ? __filename : undefined
+
+function appendFetchStackTrace (err, filename) {
+  if (!err || typeof err !== 'object') {
+    return
+  }
+
+  const stack = typeof err.stack === 'string' ? err.stack : ''
+  const normalizedFilename = filename.replace(/\\/g, '/')
+
+  if (stack && (stack.includes(filename) || stack.includes(normalizedFilename))) {
+    return
+  }
+
+  const capture = {}
+  Error.captureStackTrace(capture, appendFetchStackTrace)
+
+  if (!capture.stack) {
+    return
+  }
+
+  const captureLines = capture.stack.split('\n').slice(1).join('\n')
+
+  err.stack = stack ? `${stack}\n${captureLines}` : capture.stack
+}
+
 module.exports.hd = function fetch (init, options = undefined) {
   return fetchImpl(init, options).catch(err => {
-    if (err && typeof err === 'object') {
-      Error.captureStackTrace(err)
+    if (currentFilename) {
+      appendFetchStackTrace(err, currentFilename)
+    } else if (err && typeof err === 'object') {
+      Error.captureStackTrace(err, module.exports.hd)
     }
     throw err
   })
@@ -1622,6 +1654,7 @@ class RequestHandler extends AsyncResource {
       try {
         this.runInAsyncScope(callback, null, null, {
           statusCode,
+          statusText: statusMessage,
           headers,
           trailers: this.trailers,
           opaque,
@@ -4312,6 +4345,33 @@ class MaxOriginsReachedError extends UndiciError {
   }
 }
 
+class Socks5ProxyError extends UndiciError {
+  constructor (message, code) {
+    super(message)
+    this.name = 'Socks5ProxyError'
+    this.message = message || 'SOCKS5 proxy error'
+    this.code = code || 'UND_ERR_SOCKS5'
+  }
+}
+
+const kMessageSizeExceededError = Symbol.for('undici.error.UND_ERR_WS_MESSAGE_SIZE_EXCEEDED')
+class MessageSizeExceededError extends UndiciError {
+  constructor (message) {
+    super(message)
+    this.name = 'MessageSizeExceededError'
+    this.message = message || 'Max decompressed message size exceeded'
+    this.code = 'UND_ERR_WS_MESSAGE_SIZE_EXCEEDED'
+  }
+
+  static [Symbol.hasInstance] (instance) {
+    return instance && instance[kMessageSizeExceededError] === true
+  }
+
+  get [kMessageSizeExceededError] () {
+    return true
+  }
+}
+
 module.exports = {
   AbortError,
   HTTPParserError,
@@ -4335,7 +4395,9 @@ module.exports = {
   RequestRetryError,
   ResponseError,
   SecureProxyConnectionError,
-  MaxOriginsReachedError
+  MaxOriginsReachedError,
+  Socks5ProxyError,
+  MessageSizeExceededError
 }
 
 
@@ -4359,6 +4421,7 @@ const {
   isBuffer,
   isFormDataLike,
   isIterable,
+  hasSafeIterator,
   isBlobLike,
   serializePathWithQuery,
   assertRequestHandler,
@@ -4390,7 +4453,8 @@ class Request {
     expectContinue,
     servername,
     throwOnError,
-    maxRedirections
+    maxRedirections,
+    typeOfService
   }, handler) {
     if (typeof path !== 'string') {
       throw new InvalidArgumentError('path must be a string')
@@ -4412,6 +4476,10 @@ class Request {
 
     if (upgrade && typeof upgrade !== 'string') {
       throw new InvalidArgumentError('upgrade must be a string')
+    }
+
+    if (upgrade && !isValidHeaderValue(upgrade)) {
+      throw new InvalidArgumentError('invalid upgrade header')
     }
 
     if (headersTimeout != null && (!Number.isFinite(headersTimeout) || headersTimeout < 0)) {
@@ -4438,11 +4506,17 @@ class Request {
       throw new InvalidArgumentError('maxRedirections is not supported, use the redirect interceptor')
     }
 
+    if (typeOfService != null && (!Number.isInteger(typeOfService) || typeOfService < 0 || typeOfService > 255)) {
+      throw new InvalidArgumentError('typeOfService must be an integer between 0 and 255')
+    }
+
     this.headersTimeout = headersTimeout
 
     this.bodyTimeout = bodyTimeout
 
     this.method = method
+
+    this.typeOfService = typeOfService ?? 0
 
     this.abort = null
 
@@ -4520,7 +4594,7 @@ class Request {
         processHeader(this, headers[i], headers[i + 1])
       }
     } else if (headers && typeof headers === 'object') {
-      if (headers[Symbol.iterator]) {
+      if (hasSafeIterator(headers)) {
         for (const header of headers) {
           if (!Array.isArray(header) || header.length !== 2) {
             throw new InvalidArgumentError('headers must be in key-value pair format')
@@ -4723,13 +4797,19 @@ function processHeader (request, key, val) {
     val = `${val}`
   }
 
-  if (request.host === null && headerName === 'host') {
+  if (headerName === 'host') {
+    if (request.host !== null) {
+      throw new InvalidArgumentError('duplicate host header')
+    }
     if (typeof val !== 'string') {
       throw new InvalidArgumentError('invalid host header')
     }
     // Consumed by Client
     request.host = val
-  } else if (request.contentLength === null && headerName === 'content-length') {
+  } else if (headerName === 'content-length') {
+    if (request.contentLength !== null) {
+      throw new InvalidArgumentError('duplicate content-length header')
+    }
     request.contentLength = parseInt(val, 10)
     if (!Number.isFinite(request.contentLength)) {
       throw new InvalidArgumentError('invalid content-length header')
@@ -4756,6 +4836,630 @@ function processHeader (request, key, val) {
 }
 
 module.exports = Request
+
+
+/***/ }),
+
+/***/ 7555:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+
+
+const { EventEmitter } = __nccwpck_require__(8474)
+const { Buffer } = __nccwpck_require__(4573)
+const { InvalidArgumentError, Socks5ProxyError } = __nccwpck_require__(852)
+const { debuglog } = __nccwpck_require__(7975)
+const { parseAddress } = __nccwpck_require__(8523)
+
+const debug = debuglog('undici:socks5')
+
+// SOCKS5 constants
+const SOCKS_VERSION = 0x05
+
+// Authentication methods
+const AUTH_METHODS = {
+  NO_AUTH: 0x00,
+  GSSAPI: 0x01,
+  USERNAME_PASSWORD: 0x02,
+  NO_ACCEPTABLE: 0xFF
+}
+
+// SOCKS5 commands
+const COMMANDS = {
+  CONNECT: 0x01,
+  BIND: 0x02,
+  UDP_ASSOCIATE: 0x03
+}
+
+// Address types
+const ADDRESS_TYPES = {
+  IPV4: 0x01,
+  DOMAIN: 0x03,
+  IPV6: 0x04
+}
+
+// Reply codes
+const REPLY_CODES = {
+  SUCCEEDED: 0x00,
+  GENERAL_FAILURE: 0x01,
+  CONNECTION_NOT_ALLOWED: 0x02,
+  NETWORK_UNREACHABLE: 0x03,
+  HOST_UNREACHABLE: 0x04,
+  CONNECTION_REFUSED: 0x05,
+  TTL_EXPIRED: 0x06,
+  COMMAND_NOT_SUPPORTED: 0x07,
+  ADDRESS_TYPE_NOT_SUPPORTED: 0x08
+}
+
+// State machine states
+const STATES = {
+  INITIAL: 'initial',
+  HANDSHAKING: 'handshaking',
+  AUTHENTICATING: 'authenticating',
+  CONNECTING: 'connecting',
+  CONNECTED: 'connected',
+  ERROR: 'error',
+  CLOSED: 'closed'
+}
+
+/**
+ * SOCKS5 client implementation
+ * Handles SOCKS5 protocol negotiation and connection establishment
+ */
+class Socks5Client extends EventEmitter {
+  constructor (socket, options = {}) {
+    super()
+
+    if (!socket) {
+      throw new InvalidArgumentError('socket is required')
+    }
+
+    this.socket = socket
+    this.options = options
+    this.state = STATES.INITIAL
+    this.buffer = Buffer.alloc(0)
+
+    // Authentication settings
+    this.authMethods = []
+    if (options.username && options.password) {
+      this.authMethods.push(AUTH_METHODS.USERNAME_PASSWORD)
+    }
+    this.authMethods.push(AUTH_METHODS.NO_AUTH)
+
+    // Socket event handlers
+    this.socket.on('data', this.onData.bind(this))
+    this.socket.on('error', this.onError.bind(this))
+    this.socket.on('close', this.onClose.bind(this))
+  }
+
+  /**
+   * Handle incoming data from the socket
+   */
+  onData (data) {
+    debug('received data', data.length, 'bytes in state', this.state)
+    this.buffer = Buffer.concat([this.buffer, data])
+
+    try {
+      switch (this.state) {
+        case STATES.HANDSHAKING:
+          this.handleHandshakeResponse()
+          break
+        case STATES.AUTHENTICATING:
+          this.handleAuthResponse()
+          break
+        case STATES.CONNECTING:
+          this.handleConnectResponse()
+          break
+      }
+    } catch (err) {
+      this.onError(err)
+    }
+  }
+
+  /**
+   * Handle socket errors
+   */
+  onError (err) {
+    debug('socket error', err)
+    this.state = STATES.ERROR
+    this.emit('error', err)
+    this.destroy()
+  }
+
+  /**
+   * Handle socket close
+   */
+  onClose () {
+    debug('socket closed')
+    this.state = STATES.CLOSED
+    this.emit('close')
+  }
+
+  /**
+   * Destroy the client and underlying socket
+   */
+  destroy () {
+    if (this.socket && !this.socket.destroyed) {
+      this.socket.destroy()
+    }
+  }
+
+  /**
+   * Start the SOCKS5 handshake
+   */
+  handshake () {
+    if (this.state !== STATES.INITIAL) {
+      throw new InvalidArgumentError('Handshake already started')
+    }
+
+    debug('starting handshake with', this.authMethods.length, 'auth methods')
+    this.state = STATES.HANDSHAKING
+
+    // Build handshake request
+    // +----+----------+----------+
+    // |VER | NMETHODS | METHODS  |
+    // +----+----------+----------+
+    // | 1  |    1     | 1 to 255 |
+    // +----+----------+----------+
+    const request = Buffer.alloc(2 + this.authMethods.length)
+    request[0] = SOCKS_VERSION
+    request[1] = this.authMethods.length
+    this.authMethods.forEach((method, i) => {
+      request[2 + i] = method
+    })
+
+    this.socket.write(request)
+  }
+
+  /**
+   * Handle handshake response from server
+   */
+  handleHandshakeResponse () {
+    if (this.buffer.length < 2) {
+      return // Not enough data yet
+    }
+
+    const version = this.buffer[0]
+    const method = this.buffer[1]
+
+    if (version !== SOCKS_VERSION) {
+      throw new Socks5ProxyError(`Invalid SOCKS version: ${version}`, 'UND_ERR_SOCKS5_VERSION')
+    }
+
+    if (method === AUTH_METHODS.NO_ACCEPTABLE) {
+      throw new Socks5ProxyError('No acceptable authentication method', 'UND_ERR_SOCKS5_AUTH_REJECTED')
+    }
+
+    this.buffer = this.buffer.subarray(2)
+    debug('server selected auth method', method)
+
+    if (method === AUTH_METHODS.NO_AUTH) {
+      this.emit('authenticated')
+    } else if (method === AUTH_METHODS.USERNAME_PASSWORD) {
+      this.state = STATES.AUTHENTICATING
+      this.sendAuthRequest()
+    } else {
+      throw new Socks5ProxyError(`Unsupported authentication method: ${method}`, 'UND_ERR_SOCKS5_AUTH_METHOD')
+    }
+  }
+
+  /**
+   * Send username/password authentication request
+   */
+  sendAuthRequest () {
+    const { username, password } = this.options
+
+    if (!username || !password) {
+      throw new InvalidArgumentError('Username and password required for authentication')
+    }
+
+    debug('sending username/password auth')
+
+    // Username/Password authentication request (RFC 1929)
+    // +----+------+----------+------+----------+
+    // |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+    // +----+------+----------+------+----------+
+    // | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+    // +----+------+----------+------+----------+
+    const usernameBuffer = Buffer.from(username)
+    const passwordBuffer = Buffer.from(password)
+
+    if (usernameBuffer.length > 255 || passwordBuffer.length > 255) {
+      throw new InvalidArgumentError('Username or password too long')
+    }
+
+    const request = Buffer.alloc(3 + usernameBuffer.length + passwordBuffer.length)
+    request[0] = 0x01 // Sub-negotiation version
+    request[1] = usernameBuffer.length
+    usernameBuffer.copy(request, 2)
+    request[2 + usernameBuffer.length] = passwordBuffer.length
+    passwordBuffer.copy(request, 3 + usernameBuffer.length)
+
+    this.socket.write(request)
+  }
+
+  /**
+   * Handle authentication response
+   */
+  handleAuthResponse () {
+    if (this.buffer.length < 2) {
+      return // Not enough data yet
+    }
+
+    const version = this.buffer[0]
+    const status = this.buffer[1]
+
+    if (version !== 0x01) {
+      throw new Socks5ProxyError(`Invalid auth sub-negotiation version: ${version}`, 'UND_ERR_SOCKS5_AUTH_VERSION')
+    }
+
+    if (status !== 0x00) {
+      throw new Socks5ProxyError('Authentication failed', 'UND_ERR_SOCKS5_AUTH_FAILED')
+    }
+
+    this.buffer = this.buffer.subarray(2)
+    debug('authentication successful')
+    this.emit('authenticated')
+  }
+
+  /**
+   * Send CONNECT command
+   * @param {string} address - Target address (IP or domain)
+   * @param {number} port - Target port
+   */
+  connect (address, port) {
+    if (this.state === STATES.CONNECTED) {
+      throw new InvalidArgumentError('Already connected')
+    }
+
+    debug('connecting to', address, port)
+    this.state = STATES.CONNECTING
+
+    const request = this.buildConnectRequest(COMMANDS.CONNECT, address, port)
+    this.socket.write(request)
+  }
+
+  /**
+   * Build a SOCKS5 request
+   */
+  buildConnectRequest (command, address, port) {
+    // Parse address to determine type and buffer
+    const { type: addressType, buffer: addressBuffer } = parseAddress(address)
+
+    // Build request
+    // +----+-----+-------+------+----------+----------+
+    // |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
+    // +----+-----+-------+------+----------+----------+
+    // | 1  |  1  | X'00' |  1   | Variable |    2     |
+    // +----+-----+-------+------+----------+----------+
+    const request = Buffer.alloc(4 + addressBuffer.length + 2)
+    request[0] = SOCKS_VERSION
+    request[1] = command
+    request[2] = 0x00 // Reserved
+    request[3] = addressType
+    addressBuffer.copy(request, 4)
+    request.writeUInt16BE(port, 4 + addressBuffer.length)
+
+    return request
+  }
+
+  /**
+   * Handle CONNECT response
+   */
+  handleConnectResponse () {
+    if (this.buffer.length < 4) {
+      return // Not enough data for header
+    }
+
+    const version = this.buffer[0]
+    const reply = this.buffer[1]
+    const addressType = this.buffer[3]
+
+    if (version !== SOCKS_VERSION) {
+      throw new Socks5ProxyError(`Invalid SOCKS version in reply: ${version}`, 'UND_ERR_SOCKS5_REPLY_VERSION')
+    }
+
+    // Calculate the expected response length
+    let responseLength = 4 // VER + REP + RSV + ATYP
+    if (addressType === ADDRESS_TYPES.IPV4) {
+      responseLength += 4 + 2 // IPv4 + port
+    } else if (addressType === ADDRESS_TYPES.DOMAIN) {
+      if (this.buffer.length < 5) {
+        return // Need domain length byte
+      }
+      responseLength += 1 + this.buffer[4] + 2 // length byte + domain + port
+    } else if (addressType === ADDRESS_TYPES.IPV6) {
+      responseLength += 16 + 2 // IPv6 + port
+    } else {
+      throw new Socks5ProxyError(`Invalid address type in reply: ${addressType}`, 'UND_ERR_SOCKS5_ADDR_TYPE')
+    }
+
+    if (this.buffer.length < responseLength) {
+      return // Not enough data for full response
+    }
+
+    if (reply !== REPLY_CODES.SUCCEEDED) {
+      const errorMessage = this.getReplyErrorMessage(reply)
+      throw new Socks5ProxyError(`SOCKS5 connection failed: ${errorMessage}`, `UND_ERR_SOCKS5_REPLY_${reply}`)
+    }
+
+    // Parse bound address and port
+    let boundAddress
+    let offset = 4
+
+    if (addressType === ADDRESS_TYPES.IPV4) {
+      boundAddress = Array.from(this.buffer.subarray(offset, offset + 4)).join('.')
+      offset += 4
+    } else if (addressType === ADDRESS_TYPES.DOMAIN) {
+      const domainLength = this.buffer[offset]
+      offset += 1
+      boundAddress = this.buffer.subarray(offset, offset + domainLength).toString()
+      offset += domainLength
+    } else if (addressType === ADDRESS_TYPES.IPV6) {
+      // Parse IPv6 address from 16-byte buffer
+      const parts = []
+      for (let i = 0; i < 8; i++) {
+        const value = this.buffer.readUInt16BE(offset + i * 2)
+        parts.push(value.toString(16))
+      }
+      boundAddress = parts.join(':')
+      offset += 16
+    }
+
+    const boundPort = this.buffer.readUInt16BE(offset)
+
+    this.buffer = this.buffer.subarray(responseLength)
+    this.state = STATES.CONNECTED
+
+    debug('connected, bound address:', boundAddress, 'port:', boundPort)
+    this.emit('connected', { address: boundAddress, port: boundPort })
+  }
+
+  /**
+   * Get human-readable error message for reply code
+   */
+  getReplyErrorMessage (reply) {
+    switch (reply) {
+      case REPLY_CODES.GENERAL_FAILURE:
+        return 'General SOCKS server failure'
+      case REPLY_CODES.CONNECTION_NOT_ALLOWED:
+        return 'Connection not allowed by ruleset'
+      case REPLY_CODES.NETWORK_UNREACHABLE:
+        return 'Network unreachable'
+      case REPLY_CODES.HOST_UNREACHABLE:
+        return 'Host unreachable'
+      case REPLY_CODES.CONNECTION_REFUSED:
+        return 'Connection refused'
+      case REPLY_CODES.TTL_EXPIRED:
+        return 'TTL expired'
+      case REPLY_CODES.COMMAND_NOT_SUPPORTED:
+        return 'Command not supported'
+      case REPLY_CODES.ADDRESS_TYPE_NOT_SUPPORTED:
+        return 'Address type not supported'
+      default:
+        return `Unknown error code: ${reply}`
+    }
+  }
+}
+
+module.exports = {
+  Socks5Client,
+  AUTH_METHODS,
+  COMMANDS,
+  ADDRESS_TYPES,
+  REPLY_CODES,
+  STATES
+}
+
+
+/***/ }),
+
+/***/ 8523:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+
+
+const { Buffer } = __nccwpck_require__(4573)
+const net = __nccwpck_require__(7030)
+const { InvalidArgumentError } = __nccwpck_require__(852)
+
+/**
+ * Parse an address and determine its type
+ * @param {string} address - The address to parse
+ * @returns {{type: number, buffer: Buffer}} Address type and buffer
+ */
+function parseAddress (address) {
+  // Check if it's an IPv4 address
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number)
+    return {
+      type: 0x01, // IPv4
+      buffer: Buffer.from(parts)
+    }
+  }
+
+  // Check if it's an IPv6 address
+  if (net.isIPv6(address)) {
+    return {
+      type: 0x04, // IPv6
+      buffer: parseIPv6(address)
+    }
+  }
+
+  // Otherwise, treat as domain name
+  const domainBuffer = Buffer.from(address, 'utf8')
+  if (domainBuffer.length > 255) {
+    throw new InvalidArgumentError('Domain name too long (max 255 bytes)')
+  }
+
+  return {
+    type: 0x03, // Domain
+    buffer: Buffer.concat([Buffer.from([domainBuffer.length]), domainBuffer])
+  }
+}
+
+/**
+ * Parse IPv6 address to buffer
+ * @param {string} address - IPv6 address string
+ * @returns {Buffer} 16-byte buffer
+ */
+function parseIPv6 (address) {
+  const buffer = Buffer.alloc(16)
+  const parts = address.split(':')
+  let partIndex = 0
+  let bufferIndex = 0
+
+  // Handle compressed notation (::)
+  const doubleColonIndex = address.indexOf('::')
+  if (doubleColonIndex !== -1) {
+    // Count non-empty parts
+    const nonEmptyParts = parts.filter(p => p.length > 0).length
+    const skipParts = 8 - nonEmptyParts
+
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === '' && i === doubleColonIndex / 3) {
+        // Skip empty parts for ::
+        bufferIndex += skipParts * 2
+      } else if (parts[i] !== '') {
+        const value = parseInt(parts[i], 16)
+        buffer.writeUInt16BE(value, bufferIndex)
+        bufferIndex += 2
+      }
+    }
+  } else {
+    // No compression, parse normally
+    for (const part of parts) {
+      if (part === '') continue
+      const value = parseInt(part, 16)
+      buffer.writeUInt16BE(value, partIndex * 2)
+      partIndex++
+    }
+  }
+
+  return buffer
+}
+
+/**
+ * Build a SOCKS5 address buffer
+ * @param {number} type - Address type (1=IPv4, 3=Domain, 4=IPv6)
+ * @param {Buffer} addressBuffer - The address data
+ * @param {number} port - Port number
+ * @returns {Buffer} Complete address buffer including type, address, and port
+ */
+function buildAddressBuffer (type, addressBuffer, port) {
+  const portBuffer = Buffer.allocUnsafe(2)
+  portBuffer.writeUInt16BE(port, 0)
+
+  return Buffer.concat([
+    Buffer.from([type]),
+    addressBuffer,
+    portBuffer
+  ])
+}
+
+/**
+ * Parse address from SOCKS5 response
+ * @param {Buffer} buffer - Buffer containing the address
+ * @param {number} offset - Starting offset in buffer
+ * @returns {{address: string, port: number, bytesRead: number}}
+ */
+function parseResponseAddress (buffer, offset = 0) {
+  if (buffer.length < offset + 1) {
+    throw new InvalidArgumentError('Buffer too small to contain address type')
+  }
+
+  const addressType = buffer[offset]
+  let address
+  let currentOffset = offset + 1
+
+  switch (addressType) {
+    case 0x01: { // IPv4
+      if (buffer.length < currentOffset + 6) {
+        throw new InvalidArgumentError('Buffer too small for IPv4 address')
+      }
+      address = Array.from(buffer.subarray(currentOffset, currentOffset + 4)).join('.')
+      currentOffset += 4
+      break
+    }
+
+    case 0x03: { // Domain
+      if (buffer.length < currentOffset + 1) {
+        throw new InvalidArgumentError('Buffer too small for domain length')
+      }
+      const domainLength = buffer[currentOffset]
+      currentOffset += 1
+
+      if (buffer.length < currentOffset + domainLength + 2) {
+        throw new InvalidArgumentError('Buffer too small for domain address')
+      }
+      address = buffer.subarray(currentOffset, currentOffset + domainLength).toString('utf8')
+      currentOffset += domainLength
+      break
+    }
+
+    case 0x04: { // IPv6
+      if (buffer.length < currentOffset + 18) {
+        throw new InvalidArgumentError('Buffer too small for IPv6 address')
+      }
+      // Convert buffer to IPv6 string
+      const parts = []
+      for (let i = 0; i < 8; i++) {
+        const value = buffer.readUInt16BE(currentOffset + i * 2)
+        parts.push(value.toString(16))
+      }
+      address = parts.join(':')
+      currentOffset += 16
+      break
+    }
+
+    default:
+      throw new InvalidArgumentError(`Invalid address type: ${addressType}`)
+  }
+
+  // Parse port
+  if (buffer.length < currentOffset + 2) {
+    throw new InvalidArgumentError('Buffer too small for port')
+  }
+  const port = buffer.readUInt16BE(currentOffset)
+  currentOffset += 2
+
+  return {
+    address,
+    port,
+    bytesRead: currentOffset - offset
+  }
+}
+
+/**
+ * Create error for SOCKS5 reply code
+ * @param {number} replyCode - SOCKS5 reply code
+ * @returns {Error} Appropriate error object
+ */
+function createReplyError (replyCode) {
+  const messages = {
+    0x01: 'General SOCKS server failure',
+    0x02: 'Connection not allowed by ruleset',
+    0x03: 'Network unreachable',
+    0x04: 'Host unreachable',
+    0x05: 'Connection refused',
+    0x06: 'TTL expired',
+    0x07: 'Command not supported',
+    0x08: 'Address type not supported'
+  }
+
+  const message = messages[replyCode] || `Unknown SOCKS5 error code: ${replyCode}`
+  const error = new Error(message)
+  error.code = `SOCKS5_${replyCode}`
+  return error
+}
+
+module.exports = {
+  parseAddress,
+  parseIPv6,
+  buildAddressBuffer,
+  parseResponseAddress,
+  createReplyError
+}
 
 
 /***/ }),
@@ -4832,9 +5536,11 @@ module.exports = {
   kEnableConnectProtocol: Symbol('http2session connect protocol'),
   kRemoteSettings: Symbol('http2session remote settings'),
   kHTTP2Stream: Symbol('http2session client stream'),
+  kPingInterval: Symbol('ping interval'),
   kNoProxyAgent: Symbol('no proxy agent'),
   kHttpProxyAgent: Symbol('http proxy agent'),
-  kHttpsProxyAgent: Symbol('https proxy agent')
+  kHttpsProxyAgent: Symbol('https proxy agent'),
+  kSocks5ProxyAgent: Symbol('socks5 proxy agent')
 }
 
 
@@ -5337,6 +6043,20 @@ function isAsyncIterable (obj) {
  */
 function isIterable (obj) {
   return !!(obj != null && (typeof obj[Symbol.iterator] === 'function' || typeof obj[Symbol.asyncIterator] === 'function'))
+}
+
+/**
+ * Checks whether an object has a safe Symbol.iterator — i.e. one that is
+ * either own or inherited from a non-Object.prototype chain.  This prevents
+ * prototype-pollution attacks from injecting a fake iterator on
+ * Object.prototype.
+ * @param {object} obj
+ * @returns {boolean}
+ */
+function hasSafeIterator (obj) {
+  const prototype = Object.getPrototypeOf(obj)
+  const ownIterator = Object.prototype.hasOwnProperty.call(obj, Symbol.iterator)
+  return ownIterator || (prototype != null && prototype !== Object.prototype && typeof obj[Symbol.iterator] === 'function')
 }
 
 /**
@@ -5930,6 +6650,7 @@ module.exports = {
   getServerName,
   isStream,
   isIterable,
+  hasSafeIterator,
   isAsyncIterable,
   isDestroyed,
   headerNameToString,
@@ -6068,7 +6789,9 @@ class Agent extends DispatcherBase {
           if (connected) result.count -= 1
           if (result.count <= 0) {
             this[kClients].delete(key)
-            result.dispatcher.close()
+            if (!result.dispatcher.destroyed) {
+              result.dispatcher.close()
+            }
           }
           this[kOrigins].delete(key)
         }
@@ -6153,7 +6876,7 @@ const {
 } = __nccwpck_require__(4721)
 const Pool = __nccwpck_require__(8355)
 const { kUrl } = __nccwpck_require__(8577)
-const { parseOrigin } = __nccwpck_require__(4259)
+const util = __nccwpck_require__(4259)
 const kFactory = Symbol('factory')
 
 const kOptions = Symbol('options')
@@ -6195,7 +6918,10 @@ class BalancedPool extends PoolBase {
 
     super()
 
-    this[kOptions] = opts
+    this[kOptions] = { ...util.deepClone(opts) }
+    this[kOptions].interceptors = opts.interceptors
+      ? { ...opts.interceptors }
+      : undefined
     this[kIndex] = -1
     this[kCurrentWeight] = 0
 
@@ -6215,7 +6941,7 @@ class BalancedPool extends PoolBase {
   }
 
   addUpstream (upstream) {
-    const upstreamOrigin = parseOrigin(upstream).origin
+    const upstreamOrigin = util.parseOrigin(upstream).origin
 
     if (this[kClients].find((pool) => (
       pool[kUrl].origin === upstreamOrigin &&
@@ -6224,7 +6950,7 @@ class BalancedPool extends PoolBase {
     ))) {
       return this
     }
-    const pool = this[kFactory](upstreamOrigin, Object.assign({}, this[kOptions]))
+    const pool = this[kFactory](upstreamOrigin, this[kOptions])
 
     this[kAddClient](pool)
     pool.on('connect', () => {
@@ -6264,7 +6990,7 @@ class BalancedPool extends PoolBase {
   }
 
   removeUpstream (upstream) {
-    const upstreamOrigin = parseOrigin(upstream).origin
+    const upstreamOrigin = util.parseOrigin(upstream).origin
 
     const pool = this[kClients].find((pool) => (
       pool[kUrl].origin === upstreamOrigin &&
@@ -6280,7 +7006,7 @@ class BalancedPool extends PoolBase {
   }
 
   getUpstream (upstream) {
-    const upstreamOrigin = parseOrigin(upstream).origin
+    const upstreamOrigin = util.parseOrigin(upstream).origin
 
     return this[kClients].find((pool) => (
       pool[kUrl].origin === upstreamOrigin &&
@@ -7097,8 +7823,13 @@ class Parser {
   }
 }
 
-function onParserTimeout (parser) {
-  const { socket, timeoutType, client, paused } = parser.deref()
+function onParserTimeout (parserWeakRef) {
+  const parser = parserWeakRef.deref()
+  if (!parser) {
+    return
+  }
+
+  const { socket, timeoutType, client, paused } = parser
 
   if (timeoutType === TIMEOUT_HEADERS) {
     if (!socket[kWriting] || socket.writableNeedDrain || client[kRunning] > 1) {
@@ -7469,6 +8200,10 @@ function writeH1 (client, request) {
 
   if (blocking) {
     socket[kBlocking] = true
+  }
+
+  if (socket.setTypeOfService) {
+    socket.setTypeOfService(request.typeOfService)
   }
 
   let header = `${method} ${path} HTTP/1.1\r\n`
@@ -7994,6 +8729,7 @@ const {
   kStrictContentLength,
   kOnError,
   kMaxConcurrentStreams,
+  kPingInterval,
   kHTTP2Session,
   kHTTP2InitialWindowSize,
   kHTTP2ConnectionWindowSize,
@@ -8004,7 +8740,8 @@ const {
   kBodyTimeout,
   kEnableConnectProtocol,
   kRemoteSettings,
-  kHTTP2Stream
+  kHTTP2Stream,
+  kHTTP2SessionState
 } = __nccwpck_require__(8577)
 const { channels } = __nccwpck_require__(6723)
 
@@ -8072,10 +8809,15 @@ function connectH2 (client, socket) {
     }
   })
 
+  client[kSocket] = socket
   session[kOpenStreams] = 0
   session[kClient] = client
   session[kSocket] = socket
-  session[kHTTP2Session] = null
+  session[kHTTP2SessionState] = {
+    ping: {
+      interval: client[kPingInterval] === 0 ? null : setInterval(onHttp2SendPing, client[kPingInterval], session).unref()
+    }
+  }
   // We set it to true by default in a best-effort; however once connected to an H2 server
   // we will check if extended CONNECT protocol is supported or not
   // and set this value accordingly.
@@ -8223,6 +8965,31 @@ function onHttp2RemoteSettings (settings) {
   this[kClient][kResume]()
 }
 
+function onHttp2SendPing (session) {
+  const state = session[kHTTP2SessionState]
+  if ((session.closed || session.destroyed) && state.ping.interval != null) {
+    clearInterval(state.ping.interval)
+    state.ping.interval = null
+    return
+  }
+
+  // If no ping sent, do nothing
+  session.ping(onPing.bind(session))
+
+  function onPing (err, duration) {
+    const client = this[kClient]
+    const socket = this[kClient]
+
+    if (err != null) {
+      const error = new InformationalError(`HTTP/2: "PING" errored - type ${err.message}`)
+      socket[kError] = error
+      client[kOnError](error)
+    } else {
+      client.emit('ping', duration)
+    }
+  }
+}
+
 function onHttp2SessionError (err) {
   assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
 
@@ -8286,13 +9053,18 @@ function onHttp2SessionGoAway (errorCode) {
 }
 
 function onHttp2SessionClose () {
-  const { [kClient]: client } = this
+  const { [kClient]: client, [kHTTP2SessionState]: state } = this
   const { [kSocket]: socket } = client
 
   const err = this[kSocket][kError] || this[kError] || new SocketError('closed', util.getSocketInfo(socket))
 
   client[kSocket] = null
   client[kHTTPContext] = null
+
+  if (state.ping.interval != null) {
+    clearInterval(state.ping.interval)
+    state.ping.interval = null
+  }
 
   if (client.destroyed) {
     assert(client[kPending] === 0)
@@ -8636,6 +9408,10 @@ function writeH2 (client, request) {
   })
 
   stream.on('data', (chunk) => {
+    if (request.aborted || request.completed) {
+      return
+    }
+
     if (request.onData(chunk) === false) {
       stream.pause()
     }
@@ -8700,6 +9476,7 @@ function writeH2 (client, request) {
       return
     }
 
+    stream.removeAllListeners('data')
     request.onComplete(trailers)
   })
 
@@ -8984,7 +9761,8 @@ const {
   kMaxConcurrentStreams,
   kHTTP2InitialWindowSize,
   kHTTP2ConnectionWindowSize,
-  kResume
+  kResume,
+  kPingInterval
 } = __nccwpck_require__(8577)
 const connectH1 = __nccwpck_require__(2496)
 const connectH2 = __nccwpck_require__(7033)
@@ -8998,7 +9776,7 @@ const getDefaultNodeMaxHeaderSize = http &&
   ? () => http.maxHeaderSize
   : () => { throw new InvalidArgumentError('http module not available or http.maxHeaderSize invalid') }
 
-const noop = () => {}
+const noop = () => { }
 
 function getPipelining (client) {
   return client[kPipelining] ?? client[kHTTPContext]?.defaultPipelining ?? 1
@@ -9042,7 +9820,8 @@ class Client extends DispatcherBase {
     allowH2,
     useH2c,
     initialWindowSize,
-    connectionWindowSize
+    connectionWindowSize,
+    pingInterval
   } = {}) {
     if (keepAlive !== undefined) {
       throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
@@ -9146,6 +9925,10 @@ class Client extends DispatcherBase {
       throw new InvalidArgumentError('connectionWindowSize must be a positive integer, greater than 0')
     }
 
+    if (pingInterval != null && (typeof pingInterval !== 'number' || !Number.isInteger(pingInterval) || pingInterval < 0)) {
+      throw new InvalidArgumentError('pingInterval must be a positive integer, greater or equal to 0')
+    }
+
     super()
 
     if (typeof connect !== 'function') {
@@ -9159,6 +9942,9 @@ class Client extends DispatcherBase {
         ...(typeof autoSelectFamily === 'boolean' ? { autoSelectFamily, autoSelectFamilyAttemptTimeout } : undefined),
         ...connect
       })
+    } else if (socketPath != null) {
+      const customConnect = connect
+      connect = (opts, callback) => customConnect({ ...opts, socketPath }, callback)
     }
 
     this[kUrl] = util.parseOrigin(url)
@@ -9180,6 +9966,8 @@ class Client extends DispatcherBase {
     this[kMaxRequests] = maxRequestsPerClient
     this[kClosedResolve] = null
     this[kMaxResponseSize] = maxResponseSize > -1 ? maxResponseSize : -1
+    this[kHTTPContext] = null
+    // h2
     this[kMaxConcurrentStreams] = maxConcurrentStreams != null ? maxConcurrentStreams : 100 // Max peerConcurrentStreams for a Node h2 server
     // HTTP/2 window sizes are set to higher defaults than Node.js core for better performance:
     // - initialWindowSize: 262144 (256KB) vs Node.js default 65535 (64KB - 1)
@@ -9189,7 +9977,7 @@ class Client extends DispatcherBase {
     //   Provides better flow control for the entire connection across multiple streams.
     this[kHTTP2InitialWindowSize] = initialWindowSize != null ? initialWindowSize : 262144
     this[kHTTP2ConnectionWindowSize] = connectionWindowSize != null ? connectionWindowSize : 524288
-    this[kHTTPContext] = null
+    this[kPingInterval] = pingInterval != null ? pingInterval : 60e3 // Default ping interval for h2 - 1 minute
 
     // kQueue is built up of 3 sections separated by
     // the kRunningIdx and kPendingIdx indices.
@@ -9528,6 +10316,10 @@ function _resume (client, sync) {
     }
 
     const request = client[kQueue][client[kPendingIdx]]
+
+    if (request === null) {
+      return
+    }
 
     if (client[kUrl].protocol === 'https:' && client[kServerName] !== request.servername) {
       if (client[kRunning] > 0) {
@@ -9898,16 +10690,14 @@ class EnvHttpProxyAgent extends DispatcherBase {
       if (entry.port && entry.port !== port) {
         continue // Skip if ports don't match.
       }
-      if (!/^[.*]/.test(entry.hostname)) {
-        // No wildcards, so don't proxy only if there is not an exact match.
-        if (hostname === entry.hostname) {
-          return false
-        }
-      } else {
-        // Don't proxy if the hostname ends with the no_proxy host.
-        if (hostname.endsWith(entry.hostname.replace(/^\*/, ''))) {
-          return false
-        }
+      // Don't proxy if the hostname is equal with the no_proxy host.
+      if (hostname === entry.hostname) {
+        return false
+      }
+      // Don't proxy if the hostname is the subdomain of the no_proxy host.
+      // Reference - https://github.com/denoland/deno/blob/6fbce91e40cc07fc6da74068e5cc56fdd40f7b4c/ext/fetch/proxy.rs#L485
+      if (hostname.slice(-(entry.hostname.length + 1)) === `.${entry.hostname}`) {
+        return false
       }
     }
 
@@ -9926,7 +10716,8 @@ class EnvHttpProxyAgent extends DispatcherBase {
       }
       const parsed = entry.match(/^(.+):(\d+)$/)
       noProxyEntries.push({
-        hostname: (parsed ? parsed[1] : entry).toLowerCase(),
+        // strip leading dot or asterisk with dot
+        hostname: (parsed ? parsed[1] : entry).replace(/^\*?\./, '').toLowerCase(),
         port: parsed ? Number.parseInt(parsed[2], 10) : 0
       })
     }
@@ -10205,9 +10996,12 @@ class PoolBase extends DispatcherBase {
     }
 
     if (this[kClosedResolve] && queue.isEmpty()) {
-      const closeAll = new Array(this[kClients].length)
+      const closeAll = []
       for (let i = 0; i < this[kClients].length; i++) {
-        closeAll[i] = this[kClients][i].close()
+        const client = this[kClients][i]
+        if (!client.destroyed) {
+          closeAll.push(client.close())
+        }
       }
       return Promise.all(closeAll)
         .then(this[kClosedResolve])
@@ -10276,9 +11070,12 @@ class PoolBase extends DispatcherBase {
 
   [kClose] () {
     if (this[kQueue].isEmpty()) {
-      const closeAll = new Array(this[kClients].length)
+      const closeAll = []
       for (let i = 0; i < this[kClients].length; i++) {
-        closeAll[i] = this[kClients][i].close()
+        const client = this[kClients][i]
+        if (!client.destroyed) {
+          closeAll.push(client.close())
+        }
       }
       return Promise.all(closeAll)
     } else {
@@ -10439,7 +11236,7 @@ class Pool extends PoolBase {
 
     this[kConnections] = connections || null
     this[kUrl] = util.parseOrigin(origin)
-    this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl }
+    this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl, socketPath }
     this[kOptions].interceptors = options.interceptors
       ? { ...options.interceptors }
       : undefined
@@ -10505,6 +11302,7 @@ const { InvalidArgumentError, RequestAbortedError, SecureProxyConnectionError } 
 const buildConnector = __nccwpck_require__(9641)
 const Client = __nccwpck_require__(654)
 const { channels } = __nccwpck_require__(6723)
+const Socks5ProxyAgent = __nccwpck_require__(5480)
 
 const kAgent = Symbol('proxy agent')
 const kClient = Symbol('proxy client')
@@ -10629,6 +11427,19 @@ class ProxyAgent extends DispatcherBase {
     const agentFactory = opts.factory || defaultAgentFactory
     const factory = (origin, options) => {
       const { protocol } = new URL(origin)
+
+      // Handle SOCKS5 proxy
+      if (this[kProxy].protocol === 'socks5:' || this[kProxy].protocol === 'socks:') {
+        return new Socks5ProxyAgent(this[kProxy].uri, {
+          headers: this[kProxyHeaders],
+          connect,
+          factory: agentFactory,
+          username: opts.username || username,
+          password: opts.password || password,
+          proxyTls: opts.proxyTls
+        })
+      }
+
       if (!this[kTunnelProxy] && protocol === 'http:' && this[kProxy].protocol === 'http:') {
         return new Http1ProxyWrapper(this[kProxy].uri, {
           headers: this[kProxyHeaders],
@@ -10638,11 +11449,26 @@ class ProxyAgent extends DispatcherBase {
       }
       return agentFactory(origin, options)
     }
-    this[kClient] = clientFactory(url, { connect })
+
+    // For SOCKS5 proxies, we don't need a client to the proxy itself
+    // The SOCKS5 connection is handled within Socks5ProxyAgent
+    if (protocol === 'socks5:' || protocol === 'socks:') {
+      this[kClient] = null
+    } else {
+      this[kClient] = clientFactory(url, { connect })
+    }
+
     this[kAgent] = new Agent({
       ...opts,
       factory,
       connect: async (opts, callback) => {
+        // SOCKS5 proxies handle their own connections via Socks5ProxyAgent,
+        // so this connect function should never be called for them.
+        if (!this[kClient]) {
+          callback(new InvalidArgumentError('Cannot establish tunnel connection without a proxy client'))
+          return
+        }
+
         let requestedPath = opts.host
         if (!opts.port) {
           requestedPath += `:${defaultProtocolPort(opts.protocol)}`
@@ -10730,17 +11556,19 @@ class ProxyAgent extends DispatcherBase {
   }
 
   [kClose] () {
-    return Promise.all([
-      this[kAgent].close(),
-      this[kClient].close()
-    ])
+    const promises = [this[kAgent].close()]
+    if (this[kClient]) {
+      promises.push(this[kClient].close())
+    }
+    return Promise.all(promises)
   }
 
   [kDestroy] () {
-    return Promise.all([
-      this[kAgent].destroy(),
-      this[kClient].destroy()
-    ])
+    const promises = [this[kAgent].destroy()]
+    if (this[kClient]) {
+      promises.push(this[kClient].destroy())
+    }
+    return Promise.all(promises)
   }
 }
 
@@ -10901,7 +11729,7 @@ class RoundRobinPool extends PoolBase {
 
     this[kConnections] = connections || null
     this[kUrl] = util.parseOrigin(origin)
-    this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl }
+    this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl, socketPath }
     this[kOptions].interceptors = options.interceptors
       ? { ...options.interceptors }
       : undefined
@@ -10968,6 +11796,262 @@ class RoundRobinPool extends PoolBase {
 }
 
 module.exports = RoundRobinPool
+
+
+/***/ }),
+
+/***/ 5480:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+
+
+const net = __nccwpck_require__(7030)
+const { URL } = __nccwpck_require__(3136)
+
+let tls // include tls conditionally since it is not always available
+const DispatcherBase = __nccwpck_require__(4240)
+const { InvalidArgumentError } = __nccwpck_require__(852)
+const { Socks5Client } = __nccwpck_require__(7555)
+const { kDispatch, kClose, kDestroy } = __nccwpck_require__(8577)
+const Pool = __nccwpck_require__(8355)
+const buildConnector = __nccwpck_require__(9641)
+const { debuglog } = __nccwpck_require__(7975)
+
+const debug = debuglog('undici:socks5-proxy')
+
+const kProxyUrl = Symbol('proxy url')
+const kProxyHeaders = Symbol('proxy headers')
+const kProxyAuth = Symbol('proxy auth')
+const kPool = Symbol('pool')
+const kConnector = Symbol('connector')
+
+// Static flag to ensure warning is only emitted once per process
+let experimentalWarningEmitted = false
+
+/**
+ * SOCKS5 proxy agent for dispatching requests through a SOCKS5 proxy
+ */
+class Socks5ProxyAgent extends DispatcherBase {
+  constructor (proxyUrl, options = {}) {
+    super()
+
+    // Emit experimental warning only once
+    if (!experimentalWarningEmitted) {
+      process.emitWarning(
+        'SOCKS5 proxy support is experimental and subject to change',
+        'ExperimentalWarning'
+      )
+      experimentalWarningEmitted = true
+    }
+
+    if (!proxyUrl) {
+      throw new InvalidArgumentError('Proxy URL is mandatory')
+    }
+
+    // Parse proxy URL
+    const url = typeof proxyUrl === 'string' ? new URL(proxyUrl) : proxyUrl
+
+    if (url.protocol !== 'socks5:' && url.protocol !== 'socks:') {
+      throw new InvalidArgumentError('Proxy URL must use socks5:// or socks:// protocol')
+    }
+
+    this[kProxyUrl] = url
+    this[kProxyHeaders] = options.headers || {}
+
+    // Extract auth from URL or options
+    this[kProxyAuth] = {
+      username: options.username || (url.username ? decodeURIComponent(url.username) : null),
+      password: options.password || (url.password ? decodeURIComponent(url.password) : null)
+    }
+
+    // Create connector for proxy connection
+    this[kConnector] = options.connect || buildConnector({
+      ...options.proxyTls,
+      servername: options.proxyTls?.servername || url.hostname
+    })
+
+    // Pool for the actual HTTP connections (with SOCKS5 tunnel connect function)
+    this[kPool] = null
+  }
+
+  /**
+   * Create a SOCKS5 connection to the proxy
+   */
+  async createSocks5Connection (targetHost, targetPort) {
+    const proxyHost = this[kProxyUrl].hostname
+    const proxyPort = parseInt(this[kProxyUrl].port) || 1080
+
+    debug('creating SOCKS5 connection to', proxyHost, proxyPort)
+
+    // Connect to the SOCKS5 proxy
+    const socket = await new Promise((resolve, reject) => {
+      const onConnect = () => {
+        socket.removeListener('error', onError)
+        resolve(socket)
+      }
+
+      const onError = (err) => {
+        socket.removeListener('connect', onConnect)
+        reject(err)
+      }
+
+      const socket = net.connect({
+        host: proxyHost,
+        port: proxyPort
+      })
+
+      socket.once('connect', onConnect)
+      socket.once('error', onError)
+    })
+
+    // Create SOCKS5 client
+    const socks5Client = new Socks5Client(socket, this[kProxyAuth])
+
+    // Handle SOCKS5 errors
+    socks5Client.on('error', (err) => {
+      debug('SOCKS5 error:', err)
+      socket.destroy()
+    })
+
+    // Perform SOCKS5 handshake
+    await socks5Client.handshake()
+
+    // Wait for authentication (if required)
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('SOCKS5 authentication timeout'))
+      }, 5000)
+
+      const onAuthenticated = () => {
+        clearTimeout(timeout)
+        socks5Client.removeListener('error', onError)
+        resolve()
+      }
+
+      const onError = (err) => {
+        clearTimeout(timeout)
+        socks5Client.removeListener('authenticated', onAuthenticated)
+        reject(err)
+      }
+
+      // Check if already authenticated (for NO_AUTH method)
+      if (socks5Client.state === 'authenticated') {
+        clearTimeout(timeout)
+        resolve()
+      } else {
+        socks5Client.once('authenticated', onAuthenticated)
+        socks5Client.once('error', onError)
+      }
+    })
+
+    // Send CONNECT command
+    await socks5Client.connect(targetHost, targetPort)
+
+    // Wait for connection
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('SOCKS5 connection timeout'))
+      }, 5000)
+
+      const onConnected = (info) => {
+        debug('SOCKS5 tunnel established to', targetHost, targetPort, 'via', info)
+        clearTimeout(timeout)
+        socks5Client.removeListener('error', onError)
+        resolve()
+      }
+
+      const onError = (err) => {
+        clearTimeout(timeout)
+        socks5Client.removeListener('connected', onConnected)
+        reject(err)
+      }
+
+      socks5Client.once('connected', onConnected)
+      socks5Client.once('error', onError)
+    })
+
+    return socket
+  }
+
+  /**
+   * Dispatch a request through the SOCKS5 proxy
+   */
+  async [kDispatch] (opts, handler) {
+    const { origin } = opts
+
+    debug('dispatching request to', origin, 'via SOCKS5')
+
+    try {
+      // Create Pool with custom connect function if we don't have one yet
+      if (!this[kPool] || this[kPool].destroyed || this[kPool].closed) {
+        this[kPool] = new Pool(origin, {
+          pipelining: opts.pipelining,
+          connections: opts.connections,
+          connect: async (connectOpts, callback) => {
+            try {
+              const url = new URL(origin)
+              const targetHost = url.hostname
+              const targetPort = parseInt(url.port) || (url.protocol === 'https:' ? 443 : 80)
+
+              debug('establishing SOCKS5 connection to', targetHost, targetPort)
+
+              // Create SOCKS5 tunnel
+              const socket = await this.createSocks5Connection(targetHost, targetPort)
+
+              // Handle TLS if needed
+              let finalSocket = socket
+              if (url.protocol === 'https:') {
+                if (!tls) {
+                  tls = __nccwpck_require__(1692)
+                }
+                debug('upgrading to TLS')
+                finalSocket = tls.connect({
+                  socket,
+                  servername: targetHost,
+                  ...connectOpts.tls || {}
+                })
+
+                await new Promise((resolve, reject) => {
+                  finalSocket.once('secureConnect', resolve)
+                  finalSocket.once('error', reject)
+                })
+              }
+
+              callback(null, finalSocket)
+            } catch (err) {
+              debug('SOCKS5 connection error:', err)
+              callback(err)
+            }
+          }
+        })
+      }
+
+      // Dispatch the request through the pool
+      return this[kPool][kDispatch](opts, handler)
+    } catch (err) {
+      debug('dispatch error:', err)
+      if (typeof handler.onError === 'function') {
+        handler.onError(err)
+      } else {
+        throw err
+      }
+    }
+  }
+
+  async [kClose] () {
+    if (this[kPool]) {
+      await this[kPool].close()
+    }
+  }
+
+  async [kDestroy] (err) {
+    if (this[kPool]) {
+      await this[kPool].destroy(err)
+    }
+  }
+}
+
+module.exports = Socks5ProxyAgent
 
 
 /***/ }),
@@ -11267,57 +12351,92 @@ class CacheHandler {
     // Not modified, re-use the cached value
     // https://www.rfc-editor.org/rfc/rfc9111.html#name-handling-304-not-modified
     if (statusCode === 304) {
-      /**
-       * @type {import('../../types/cache-interceptor.d.ts').default.CacheValue}
-       */
-      const cachedValue = this.#store.get(this.#cacheKey)
-      if (!cachedValue) {
-        // Do not create a new cache entry, as a 304 won't have a body - so cannot be cached.
-        return downstreamOnHeaders()
-      }
+      const handle304 = (cachedValue) => {
+        if (!cachedValue) {
+          // Do not create a new cache entry, as a 304 won't have a body - so cannot be cached.
+          return downstreamOnHeaders()
+        }
 
-      // Re-use the cached value: statuscode, statusmessage, headers and body
-      value.statusCode = cachedValue.statusCode
-      value.statusMessage = cachedValue.statusMessage
-      value.etag = cachedValue.etag
-      value.headers = { ...cachedValue.headers, ...strippedHeaders }
+        // Re-use the cached value: statuscode, statusmessage, headers and body
+        value.statusCode = cachedValue.statusCode
+        value.statusMessage = cachedValue.statusMessage
+        value.etag = cachedValue.etag
+        value.headers = { ...cachedValue.headers, ...strippedHeaders }
 
-      downstreamOnHeaders()
+        downstreamOnHeaders()
 
-      this.#writeStream = this.#store.createWriteStream(this.#cacheKey, value)
+        this.#writeStream = this.#store.createWriteStream(this.#cacheKey, value)
 
-      if (!this.#writeStream || !cachedValue?.body) {
-        return
-      }
+        if (!this.#writeStream || !cachedValue?.body) {
+          return
+        }
 
-      const bodyIterator = cachedValue.body.values()
+        if (typeof cachedValue.body.values === 'function') {
+          const bodyIterator = cachedValue.body.values()
 
-      const streamCachedBody = () => {
-        for (const chunk of bodyIterator) {
-          const full = this.#writeStream.write(chunk) === false
-          this.#handler.onResponseData?.(controller, chunk)
-          // when stream is full stop writing until we get a 'drain' event
-          if (full) {
-            break
+          const streamCachedBody = () => {
+            for (const chunk of bodyIterator) {
+              const full = this.#writeStream.write(chunk) === false
+              this.#handler.onResponseData?.(controller, chunk)
+              // when stream is full stop writing until we get a 'drain' event
+              if (full) {
+                break
+              }
+            }
           }
+
+          this.#writeStream
+            .on('error', function () {
+              handler.#writeStream = undefined
+              handler.#store.delete(handler.#cacheKey)
+            })
+            .on('drain', () => {
+              streamCachedBody()
+            })
+            .on('close', function () {
+              if (handler.#writeStream === this) {
+                handler.#writeStream = undefined
+              }
+            })
+
+          streamCachedBody()
+        } else if (typeof cachedValue.body.on === 'function') {
+          // Readable stream body (e.g. from async/remote cache stores)
+          cachedValue.body
+            .on('data', (chunk) => {
+              this.#writeStream.write(chunk)
+              this.#handler.onResponseData?.(controller, chunk)
+            })
+            .on('end', () => {
+              this.#writeStream.end()
+            })
+            .on('error', () => {
+              this.#writeStream = undefined
+              this.#store.delete(this.#cacheKey)
+            })
+
+          this.#writeStream
+            .on('error', function () {
+              handler.#writeStream = undefined
+              handler.#store.delete(handler.#cacheKey)
+            })
+            .on('close', function () {
+              if (handler.#writeStream === this) {
+                handler.#writeStream = undefined
+              }
+            })
         }
       }
 
-      this.#writeStream
-        .on('error', function () {
-          handler.#writeStream = undefined
-          handler.#store.delete(handler.#cacheKey)
-        })
-        .on('drain', () => {
-          streamCachedBody()
-        })
-        .on('close', function () {
-          if (handler.#writeStream === this) {
-            handler.#writeStream = undefined
-          }
-        })
-
-      streamCachedBody()
+      /**
+       * @type {import('../../types/cache-interceptor.d.ts').default.CacheValue}
+       */
+      const result = this.#store.get(this.#cacheKey)
+      if (result && typeof result.then === 'function') {
+        result.then(handle304)
+      } else {
+        handle304(result)
+      }
     } else {
       if (typeof resHeaders.etag === 'string' && isEtagUsable(resHeaders.etag)) {
         value.etag = resHeaders.etag
@@ -11808,16 +12927,30 @@ module.exports = class DecoratorHandler {
 /***/ }),
 
 /***/ 876:
-/***/ ((module) => {
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 
+
+const { RequestAbortedError } = __nccwpck_require__(852)
 
 /**
  * @typedef {import('../../types/dispatcher.d.ts').default.DispatchHandler} DispatchHandler
  */
 
+const DEFAULT_MAX_BUFFER_SIZE = 5 * 1024 * 1024
+
 /**
- * Handler that buffers response data and notifies multiple waiting handlers.
+ * @typedef {Object} WaitingHandler
+ * @property {DispatchHandler} handler
+ * @property {import('../../types/dispatcher.d.ts').default.DispatchController} controller
+ * @property {Buffer[]} bufferedChunks
+ * @property {number} bufferedBytes
+ * @property {object | null} pendingTrailers
+ * @property {boolean} done
+ */
+
+/**
+ * Handler that forwards response events to multiple waiting handlers.
  * Used for request deduplication.
  *
  * @implements {DispatchHandler}
@@ -11829,14 +12962,14 @@ class DeduplicationHandler {
   #primaryHandler
 
   /**
-   * @type {DispatchHandler[]}
+   * @type {WaitingHandler[]}
    */
   #waitingHandlers = []
 
   /**
-   * @type {Buffer[]}
+   * @type {number}
    */
-  #chunks = []
+  #maxBufferSize = DEFAULT_MAX_BUFFER_SIZE
 
   /**
    * @type {number}
@@ -11859,6 +12992,21 @@ class DeduplicationHandler {
   #aborted = false
 
   /**
+   * @type {boolean}
+   */
+  #responseStarted = false
+
+  /**
+   * @type {boolean}
+   */
+  #responseDataStarted = false
+
+  /**
+   * @type {boolean}
+   */
+  #completed = false
+
+  /**
    * @type {import('../../types/dispatcher.d.ts').default.DispatchController | null}
    */
   #controller = null
@@ -11871,22 +13019,60 @@ class DeduplicationHandler {
   /**
    * @param {DispatchHandler} primaryHandler The primary handler
    * @param {() => void} onComplete Callback when request completes
+   * @param {number} [maxBufferSize] Maximum paused buffer size per waiting handler
    */
-  constructor (primaryHandler, onComplete) {
+  constructor (primaryHandler, onComplete, maxBufferSize = DEFAULT_MAX_BUFFER_SIZE) {
     this.#primaryHandler = primaryHandler
     this.#onComplete = onComplete
+    this.#maxBufferSize = maxBufferSize
   }
 
   /**
-   * Add a waiting handler that will receive the buffered response
+   * Add a waiting handler that will receive response events.
+   * Returns false if deduplication can no longer safely attach this handler.
+   *
    * @param {DispatchHandler} handler
+   * @returns {boolean}
    */
   addWaitingHandler (handler) {
-    this.#waitingHandlers.push(handler)
+    if (this.#completed || this.#responseDataStarted) {
+      return false
+    }
+
+    const waitingHandler = this.#createWaitingHandler(handler)
+    const waitingController = waitingHandler.controller
+
+    try {
+      handler.onRequestStart?.(waitingController, null)
+
+      if (waitingController.aborted) {
+        waitingHandler.done = true
+        return true
+      }
+
+      if (this.#responseStarted) {
+        handler.onResponseStart?.(
+          waitingController,
+          this.#statusCode,
+          this.#headers,
+          this.#statusMessage
+        )
+      }
+    } catch {
+      // Ignore errors from waiting handlers
+      waitingHandler.done = true
+      return true
+    }
+
+    if (!waitingController.aborted) {
+      this.#waitingHandlers.push(waitingHandler)
+    }
+
+    return true
   }
 
   /**
-   * @param {() => void} abort
+   * @param {import('../../types/dispatcher.d.ts').default.DispatchController} controller
    * @param {any} context
    */
   onRequestStart (controller, context) {
@@ -11911,10 +13097,38 @@ class DeduplicationHandler {
    * @param {string} statusMessage
    */
   onResponseStart (controller, statusCode, headers, statusMessage) {
+    this.#responseStarted = true
     this.#statusCode = statusCode
     this.#headers = headers
     this.#statusMessage = statusMessage
+
     this.#primaryHandler.onResponseStart?.(controller, statusCode, headers, statusMessage)
+
+    for (const waitingHandler of this.#waitingHandlers) {
+      const { handler, controller: waitingController } = waitingHandler
+
+      if (waitingHandler.done || waitingController.aborted) {
+        waitingHandler.done = true
+        continue
+      }
+
+      try {
+        handler.onResponseStart?.(
+          waitingController,
+          statusCode,
+          headers,
+          statusMessage
+        )
+      } catch {
+        // Ignore errors from waiting handlers
+      }
+
+      if (waitingController.aborted) {
+        waitingHandler.done = true
+      }
+    }
+
+    this.#pruneDoneWaitingHandlers()
   }
 
   /**
@@ -11922,9 +13136,41 @@ class DeduplicationHandler {
    * @param {Buffer} chunk
    */
   onResponseData (controller, chunk) {
-    // Buffer the chunk for waiting handlers
-    this.#chunks.push(Buffer.from(chunk))
+    if (this.#aborted || this.#completed) {
+      return
+    }
+
+    this.#responseDataStarted = true
+
     this.#primaryHandler.onResponseData?.(controller, chunk)
+
+    for (const waitingHandler of this.#waitingHandlers) {
+      const { handler, controller: waitingController } = waitingHandler
+
+      if (waitingHandler.done || waitingController.aborted) {
+        waitingHandler.done = true
+        continue
+      }
+
+      if (waitingController.paused) {
+        this.#bufferWaitingChunk(waitingHandler, chunk)
+        continue
+      }
+
+      try {
+        handler.onResponseData?.(waitingController, chunk)
+      } catch {
+        // Ignore errors from waiting handlers
+      }
+
+      if (waitingController.aborted) {
+        waitingHandler.done = true
+        waitingHandler.bufferedChunks = []
+        waitingHandler.bufferedBytes = 0
+      }
+    }
+
+    this.#pruneDoneWaitingHandlers()
   }
 
   /**
@@ -11932,8 +13178,41 @@ class DeduplicationHandler {
    * @param {object} trailers
    */
   onResponseEnd (controller, trailers) {
+    if (this.#aborted || this.#completed) {
+      return
+    }
+
+    this.#completed = true
     this.#primaryHandler.onResponseEnd?.(controller, trailers)
-    this.#notifyWaitingHandlers()
+
+    for (const waitingHandler of this.#waitingHandlers) {
+      if (waitingHandler.done || waitingHandler.controller.aborted) {
+        waitingHandler.done = true
+        continue
+      }
+
+      this.#flushWaitingHandler(waitingHandler)
+
+      if (waitingHandler.done || waitingHandler.controller.aborted) {
+        waitingHandler.done = true
+        continue
+      }
+
+      if (waitingHandler.controller.paused && waitingHandler.bufferedChunks.length > 0) {
+        waitingHandler.pendingTrailers = trailers
+        continue
+      }
+
+      try {
+        waitingHandler.handler.onResponseEnd?.(waitingHandler.controller, trailers)
+      } catch {
+        // Ignore errors from waiting handlers
+      }
+
+      waitingHandler.done = true
+    }
+
+    this.#pruneDoneWaitingHandlers()
     this.#onComplete?.()
   }
 
@@ -11942,86 +13221,170 @@ class DeduplicationHandler {
    * @param {Error} err
    */
   onResponseError (controller, err) {
+    if (this.#completed) {
+      return
+    }
+
     this.#aborted = true
+    this.#completed = true
+
     this.#primaryHandler.onResponseError?.(controller, err)
-    this.#notifyWaitingHandlersError(err)
+
+    for (const waitingHandler of this.#waitingHandlers) {
+      this.#errorWaitingHandler(waitingHandler, err)
+    }
+
+    this.#waitingHandlers = []
     this.#onComplete?.()
   }
 
   /**
-   * Notify all waiting handlers with the buffered response
+   * @param {DispatchHandler} handler
+   * @returns {WaitingHandler}
    */
-  #notifyWaitingHandlers () {
-    const body = Buffer.concat(this.#chunks)
+  #createWaitingHandler (handler) {
+    /** @type {WaitingHandler} */
+    const waitingHandler = {
+      handler,
+      controller: null,
+      bufferedChunks: [],
+      bufferedBytes: 0,
+      pendingTrailers: null,
+      done: false
+    }
 
-    for (const handler of this.#waitingHandlers) {
-      // Create a simple controller for each waiting handler
-      const waitingController = {
-        resume () {},
-        pause () {},
-        get paused () { return false },
-        get aborted () { return false },
-        get reason () { return null },
-        abort () {}
-      }
+    const state = {
+      aborted: false,
+      paused: false,
+      reason: null
+    }
 
-      try {
-        handler.onRequestStart?.(waitingController, null)
-
-        if (waitingController.aborted) {
-          continue
+    waitingHandler.controller = {
+      resume: () => {
+        if (state.aborted) {
+          return
         }
 
-        handler.onResponseStart?.(
-          waitingController,
-          this.#statusCode,
-          this.#headers,
-          this.#statusMessage
-        )
+        state.paused = false
+        this.#flushWaitingHandler(waitingHandler)
 
-        if (waitingController.aborted) {
-          continue
+        if (
+          this.#completed &&
+          waitingHandler.pendingTrailers &&
+          waitingHandler.bufferedChunks.length === 0 &&
+          !state.paused &&
+          !state.aborted
+        ) {
+          try {
+            waitingHandler.handler.onResponseEnd?.(waitingHandler.controller, waitingHandler.pendingTrailers)
+          } catch {
+            // Ignore errors from waiting handlers
+          }
+
+          waitingHandler.pendingTrailers = null
+          waitingHandler.done = true
         }
 
-        if (body.length > 0) {
-          handler.onResponseData?.(waitingController, body)
+        this.#pruneDoneWaitingHandlers()
+      },
+      pause: () => {
+        if (!state.aborted) {
+          state.paused = true
         }
-
-        handler.onResponseEnd?.(waitingController, {})
-      } catch {
-        // Ignore errors from waiting handlers
+      },
+      get paused () { return state.paused },
+      get aborted () { return state.aborted },
+      get reason () { return state.reason },
+      abort: (reason) => {
+        state.aborted = true
+        state.reason = reason ?? null
+        waitingHandler.done = true
+        waitingHandler.pendingTrailers = null
+        waitingHandler.bufferedChunks = []
+        waitingHandler.bufferedBytes = 0
       }
     }
 
-    this.#waitingHandlers = []
-    this.#chunks = []
+    return waitingHandler
   }
 
   /**
-   * Notify all waiting handlers of an error
-   * @param {Error} err
+   * @param {WaitingHandler} waitingHandler
+   * @param {Buffer} chunk
    */
-  #notifyWaitingHandlersError (err) {
-    for (const handler of this.#waitingHandlers) {
-      const waitingController = {
-        resume () {},
-        pause () {},
-        get paused () { return false },
-        get aborted () { return true },
-        get reason () { return err },
-        abort () {}
-      }
+  #bufferWaitingChunk (waitingHandler, chunk) {
+    if (waitingHandler.done || waitingHandler.controller.aborted) {
+      waitingHandler.done = true
+      waitingHandler.bufferedChunks = []
+      waitingHandler.bufferedBytes = 0
+      return
+    }
+
+    const bufferedChunk = Buffer.from(chunk)
+    waitingHandler.bufferedChunks.push(bufferedChunk)
+    waitingHandler.bufferedBytes += bufferedChunk.length
+
+    if (waitingHandler.bufferedBytes > this.#maxBufferSize) {
+      const err = new RequestAbortedError(`Deduplicated waiting handler exceeded maxBufferSize (${this.#maxBufferSize} bytes) while paused`)
+      this.#errorWaitingHandler(waitingHandler, err)
+    }
+  }
+
+  /**
+   * @param {WaitingHandler} waitingHandler
+   */
+  #flushWaitingHandler (waitingHandler) {
+    const { handler, controller } = waitingHandler
+
+    while (
+      !waitingHandler.done &&
+      !controller.aborted &&
+      !controller.paused &&
+      waitingHandler.bufferedChunks.length > 0
+    ) {
+      const bufferedChunk = waitingHandler.bufferedChunks.shift()
+      waitingHandler.bufferedBytes -= bufferedChunk.length
 
       try {
-        handler.onRequestStart?.(waitingController, null)
-        handler.onResponseError?.(waitingController, err)
+        handler.onResponseData?.(controller, bufferedChunk)
       } catch {
         // Ignore errors from waiting handlers
       }
+
+      if (controller.aborted) {
+        waitingHandler.done = true
+        waitingHandler.pendingTrailers = null
+        waitingHandler.bufferedChunks = []
+        waitingHandler.bufferedBytes = 0
+        break
+      }
+    }
+  }
+
+  /**
+   * @param {WaitingHandler} waitingHandler
+   * @param {Error} err
+   */
+  #errorWaitingHandler (waitingHandler, err) {
+    if (waitingHandler.done) {
+      return
     }
 
-    this.#waitingHandlers = []
-    this.#chunks = []
+    waitingHandler.done = true
+    waitingHandler.pendingTrailers = null
+    waitingHandler.bufferedChunks = []
+    waitingHandler.bufferedBytes = 0
+
+    try {
+      waitingHandler.controller.abort(err)
+      waitingHandler.handler.onResponseError?.(waitingHandler.controller, err)
+    } catch {
+      // Ignore errors from waiting handlers
+    }
+  }
+
+  #pruneDoneWaitingHandlers () {
+    this.#waitingHandlers = this.#waitingHandlers.filter(waitingHandler => waitingHandler.done === false)
   }
 }
 
@@ -12257,7 +13620,8 @@ function cleanRequestHeaders (headers, removeContent, unknownOrigin) {
       }
     }
   } else if (headers && typeof headers === 'object') {
-    const entries = typeof headers[Symbol.iterator] === 'function' ? headers : Object.entries(headers)
+    const entries = util.hasSafeIterator(headers) ? headers : Object.entries(headers)
+
     for (const [key, value] of entries) {
       if (!shouldRemoveHeader(key, removeContent, unknownOrigin)) {
         ret.push(key, value)
@@ -12747,6 +14111,10 @@ module.exports = class UnwrapHandler {
     this.#handler.onRequestStart?.(this.#controller, context)
   }
 
+  onResponseStarted () {
+    return this.#handler.onResponseStarted?.()
+  }
+
   onUpgrade (statusCode, rawHeaders, socket) {
     this.#handler.onRequestUpgrade?.(this.#controller, statusCode, parseHeaders(rawHeaders), socket)
   }
@@ -12803,6 +14171,10 @@ module.exports = class WrapHandler {
     return this.#handler.onConnect?.(abort, context)
   }
 
+  onResponseStarted () {
+    return this.#handler.onResponseStarted?.()
+  }
+
   onHeaders (statusCode, rawHeaders, resume, statusMessage) {
     return this.#handler.onHeaders?.(statusCode, rawHeaders, resume, statusMessage)
   }
@@ -12836,7 +14208,7 @@ module.exports = class WrapHandler {
   onRequestUpgrade (controller, statusCode, headers, socket) {
     const rawHeaders = []
     for (const [key, val] of Object.entries(headers)) {
-      rawHeaders.push(Buffer.from(key), Array.isArray(val) ? val.map(v => Buffer.from(v)) : Buffer.from(val))
+      rawHeaders.push(Buffer.from(key, 'latin1'), toRawHeaderValue(val))
     }
 
     this.#handler.onUpgrade?.(statusCode, rawHeaders, socket)
@@ -12845,7 +14217,7 @@ module.exports = class WrapHandler {
   onResponseStart (controller, statusCode, headers, statusMessage) {
     const rawHeaders = []
     for (const [key, val] of Object.entries(headers)) {
-      rawHeaders.push(Buffer.from(key), Array.isArray(val) ? val.map(v => Buffer.from(v)) : Buffer.from(val))
+      rawHeaders.push(Buffer.from(key, 'latin1'), toRawHeaderValue(val))
     }
 
     if (this.#handler.onHeaders?.(statusCode, rawHeaders, () => controller.resume(), statusMessage) === false) {
@@ -12862,7 +14234,7 @@ module.exports = class WrapHandler {
   onResponseEnd (controller, trailers) {
     const rawTrailers = []
     for (const [key, val] of Object.entries(trailers)) {
-      rawTrailers.push(Buffer.from(key), Array.isArray(val) ? val.map(v => Buffer.from(v)) : Buffer.from(val))
+      rawTrailers.push(Buffer.from(key, 'latin1'), toRawHeaderValue(val))
     }
 
     this.#handler.onComplete?.(rawTrailers)
@@ -12875,6 +14247,12 @@ module.exports = class WrapHandler {
 
     this.#handler.onError?.(err)
   }
+}
+
+function toRawHeaderValue (value) {
+  return Array.isArray(value)
+    ? value.map((item) => Buffer.from(item, 'latin1'))
+    : Buffer.from(value, 'latin1')
 }
 
 
@@ -13177,7 +14555,7 @@ function handleResult (
 
       // Start background revalidation (fire-and-forget)
       queueMicrotask(() => {
-        let headers = {
+        const headers = {
           ...opts.headers,
           'if-modified-since': new Date(result.cachedAt).toUTCString()
         }
@@ -13187,9 +14565,10 @@ function handleResult (
         }
 
         if (result.vary) {
-          headers = {
-            ...headers,
-            ...result.vary
+          for (const key in result.vary) {
+            if (result.vary[key] != null) {
+              headers[key] = result.vary[key]
+            }
           }
         }
 
@@ -13220,7 +14599,7 @@ function handleResult (
       withinStaleIfErrorThreshold = now < (result.staleAt + (staleIfErrorExpiry * 1000))
     }
 
-    let headers = {
+    const headers = {
       ...opts.headers,
       'if-modified-since': new Date(result.cachedAt).toUTCString()
     }
@@ -13230,9 +14609,10 @@ function handleResult (
     }
 
     if (result.vary) {
-      headers = {
-        ...headers,
-        ...result.vary
+      for (const key in result.vary) {
+        if (result.vary[key] != null) {
+          headers[key] = result.vary[key]
+        }
       }
     }
 
@@ -13666,7 +15046,8 @@ module.exports = (opts = {}) => {
   const {
     methods = ['GET'],
     skipHeaderNames = [],
-    excludeHeaderNames = []
+    excludeHeaderNames = [],
+    maxBufferSize = 5 * 1024 * 1024
   } = opts
 
   if (typeof opts !== 'object' || opts === null) {
@@ -13691,13 +15072,15 @@ module.exports = (opts = {}) => {
     throw new TypeError(`expected opts.excludeHeaderNames to be an array, got ${typeof excludeHeaderNames}`)
   }
 
+  if (!Number.isFinite(maxBufferSize) || maxBufferSize <= 0) {
+    throw new TypeError(`expected opts.maxBufferSize to be a positive finite number, got ${maxBufferSize}`)
+  }
+
   // Convert to lowercase Set for case-insensitive header matching
   const skipHeaderNamesSet = new Set(skipHeaderNames.map(name => name.toLowerCase()))
 
   // Convert to lowercase Set for case-insensitive header exclusion from deduplication key
   const excludeHeaderNamesSet = new Set(excludeHeaderNames.map(name => name.toLowerCase()))
-
-  const safeMethodsToNotDeduplicate = util.safeHTTPMethods.filter(method => methods.includes(method) === false)
 
   /**
    * Map of pending requests for deduplication
@@ -13707,7 +15090,7 @@ module.exports = (opts = {}) => {
 
   return dispatch => {
     return (opts, handler) => {
-      if (!opts.origin || safeMethodsToNotDeduplicate.includes(opts.method)) {
+      if (!opts.origin || methods.includes(opts.method) === false) {
         return dispatch(opts, handler)
       }
 
@@ -13731,9 +15114,13 @@ module.exports = (opts = {}) => {
       // Check if there's already a pending request for this key
       const pendingHandler = pendingRequests.get(dedupeKey)
       if (pendingHandler) {
-        // Add this handler to the waiting list
-        pendingHandler.addWaitingHandler(handler)
-        return true
+        // Add this handler to the waiting list when safe.
+        // If body streaming has already started, this request must be sent independently.
+        if (pendingHandler.addWaitingHandler(handler)) {
+          return true
+        }
+
+        return dispatch(opts, handler)
       }
 
       // Create a new deduplication handler
@@ -13745,7 +15132,8 @@ module.exports = (opts = {}) => {
           if (pendingRequestsChannel.hasSubscribers) {
             pendingRequestsChannel.publish({ size: pendingRequests.size, key: dedupeKey, type: 'removed' })
           }
-        }
+        },
+        maxBufferSize
       )
 
       // Register the pending request
@@ -13771,6 +15159,105 @@ const { lookup } = __nccwpck_require__(610)
 const DecoratorHandler = __nccwpck_require__(6680)
 const { InvalidArgumentError, InformationalError } = __nccwpck_require__(852)
 const maxInt = Math.pow(2, 31) - 1
+
+function hasSafeIterator (headers) {
+  const prototype = Object.getPrototypeOf(headers)
+  const ownIterator = Object.prototype.hasOwnProperty.call(headers, Symbol.iterator)
+  return ownIterator || (prototype != null && prototype !== Object.prototype && typeof headers[Symbol.iterator] === 'function')
+}
+
+function isHostHeader (key) {
+  return typeof key === 'string' && key.toLowerCase() === 'host'
+}
+
+function normalizeHeaders (headers) {
+  if (headers == null) {
+    return null
+  }
+
+  if (Array.isArray(headers)) {
+    if (headers.length === 0 || !Array.isArray(headers[0])) {
+      return headers
+    }
+
+    const normalized = []
+    for (const header of headers) {
+      if (Array.isArray(header) && header.length === 2) {
+        normalized.push(header[0], header[1])
+      } else {
+        normalized.push(header)
+      }
+    }
+
+    return normalized
+  }
+
+  if (typeof headers === 'object' && hasSafeIterator(headers)) {
+    const normalized = []
+    for (const header of headers) {
+      if (Array.isArray(header) && header.length === 2) {
+        normalized.push(header[0], header[1])
+      } else {
+        normalized.push(header)
+      }
+    }
+
+    return normalized
+  }
+
+  return headers
+}
+
+function hasHostHeader (headers) {
+  if (headers == null) {
+    return false
+  }
+
+  if (Array.isArray(headers)) {
+    if (headers.length === 0) {
+      return false
+    }
+
+    for (let i = 0; i < headers.length; i += 2) {
+      if (isHostHeader(headers[i])) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  if (typeof headers === 'object') {
+    for (const key in headers) {
+      if (isHostHeader(key)) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function withHostHeader (host, headers) {
+  const normalizedHeaders = normalizeHeaders(headers)
+
+  if (hasHostHeader(normalizedHeaders)) {
+    return normalizedHeaders
+  }
+
+  if (Array.isArray(normalizedHeaders)) {
+    return ['host', host, ...normalizedHeaders]
+  }
+
+  if (normalizedHeaders && typeof normalizedHeaders === 'object') {
+    return {
+      host,
+      ...normalizedHeaders
+    }
+  }
+
+  return { host }
+}
 
 class DNSStorage {
   #maxItems = 0
@@ -14100,8 +15587,9 @@ class DNSDispatchHandler extends DecoratorHandler {
           const dispatchOpts = {
             ...this.#opts,
             origin: `${this.#origin.protocol}//${
-                ip.family === 6 ? `[${ip.address}]` : ip.address
-              }${port}`
+              ip.family === 6 ? `[${ip.address}]` : ip.address
+            }${port}`,
+            headers: withHostHeader(this.#origin.host, this.#opts.headers)
           }
           this.#dispatch(dispatchOpts, this)
           return
@@ -14220,10 +15708,7 @@ module.exports = interceptorOpts => {
           ...origDispatchOpts,
           servername: origin.hostname, // For SNI on TLS
           origin: newOrigin.origin,
-          headers: {
-            host: origin.host,
-            ...origDispatchOpts.headers
-          }
+          headers: withHostHeader(origin.host, origDispatchOpts.headers)
         }
 
         dispatch(
@@ -16372,9 +17857,33 @@ function mockDispatch (opts, handler) {
     return true
   }
 
+  // Track whether the request has been aborted
+  let aborted = false
+  let timer = null
+
+  function abort (err) {
+    if (aborted) {
+      return
+    }
+    aborted = true
+
+    // Clear the pending delayed response if any
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+
+    // Notify the handler of the abort
+    handler.onError(err)
+  }
+
+  // Call onConnect to allow the handler to register the abort callback
+  handler.onConnect?.(abort, null)
+
   // Handle the request with a delay if necessary
   if (typeof delay === 'number' && delay > 0) {
-    setTimeout(() => {
+    timer = setTimeout(() => {
+      timer = null
       handleReply(this[kDispatches])
     }, delay)
   } else {
@@ -16382,6 +17891,11 @@ function mockDispatch (opts, handler) {
   }
 
   function handleReply (mockDispatches, _data = data) {
+    // Don't send response if the request was aborted
+    if (aborted) {
+      return
+    }
+
     // fetch's HeadersList is a 1D string array
     const optsHeaders = Array.isArray(opts.headers)
       ? buildHeadersFromArray(opts.headers)
@@ -16400,11 +17914,15 @@ function mockDispatch (opts, handler) {
       return body.then((newData) => handleReply(mockDispatches, newData))
     }
 
+    // Check again if aborted after async body resolution
+    if (aborted) {
+      return
+    }
+
     const responseData = getResponseData(body)
     const responseHeaders = generateKeyValues(headers)
     const responseTrailers = generateKeyValues(trailers)
 
-    handler.onConnect?.(err => handler.onError(err), null)
     handler.onHeaders?.(statusCode, responseHeaders, resume, getStatusText(statusCode))
     handler.onData?.(Buffer.from(responseData))
     handler.onComplete?.(responseTrailers)
@@ -17686,7 +19204,8 @@ module.exports = {
 
 const {
   safeHTTPMethods,
-  pathHasQueryOrFragment
+  pathHasQueryOrFragment,
+  hasSafeIterator
 } = __nccwpck_require__(4259)
 
 const { serializePathWithQuery } = __nccwpck_require__(4259)
@@ -17721,23 +19240,24 @@ function normalizeHeaders (opts) {
   let headers
   if (opts.headers == null) {
     headers = {}
-  } else if (typeof opts.headers[Symbol.iterator] === 'function') {
-    headers = {}
-    for (const x of opts.headers) {
-      if (!Array.isArray(x)) {
-        throw new Error('opts.headers is not a valid header map')
-      }
-      const [key, val] = x
-      if (typeof key !== 'string' || typeof val !== 'string') {
-        throw new Error('opts.headers is not a valid header map')
-      }
-      headers[key.toLowerCase()] = val
-    }
   } else if (typeof opts.headers === 'object') {
     headers = {}
 
-    for (const key of Object.keys(opts.headers)) {
-      headers[key.toLowerCase()] = opts.headers[key]
+    if (hasSafeIterator(opts.headers)) {
+      for (const x of opts.headers) {
+        if (!Array.isArray(x)) {
+          throw new Error('opts.headers is not a valid header map')
+        }
+        const [key, val] = x
+        if (typeof key !== 'string' || typeof val !== 'string') {
+          throw new Error('opts.headers is not a valid header map')
+        }
+        headers[key.toLowerCase()] = val
+      }
+    } else {
+      for (const key of Object.keys(opts.headers)) {
+        headers[key.toLowerCase()] = opts.headers[key]
+      }
     }
   } else {
     throw new Error('opts.headers is not an object')
@@ -22279,7 +23799,7 @@ const { FormData, setFormDataState } = __nccwpck_require__(6967)
 const { webidl } = __nccwpck_require__(6186)
 const assert = __nccwpck_require__(4589)
 const { isErrored, isDisturbed } = __nccwpck_require__(7075)
-const { isArrayBuffer } = __nccwpck_require__(3429)
+const { isUint8Array } = __nccwpck_require__(3429)
 const { serializeAMimeType } = __nccwpck_require__(6661)
 const { multipartFormDataParser } = __nccwpck_require__(1076)
 const { createDeferredPromise } = __nccwpck_require__(3137)
@@ -22313,6 +23833,7 @@ const streamRegistry = new FinalizationRegistry((weakRef) => {
 function extractBody (object, keepalive = false) {
   // 1. Let stream be null.
   let stream = null
+  let controller = null
 
   // 2. If object is a ReadableStream object, then set stream to object.
   if (webidl.is.ReadableStream(object)) {
@@ -22325,16 +23846,11 @@ function extractBody (object, keepalive = false) {
     // 4. Otherwise, set stream to a new ReadableStream object, and set
     //    up stream with byte reading support.
     stream = new ReadableStream({
-      pull (controller) {
-        const buffer = typeof source === 'string' ? textEncoder.encode(source) : source
-
-        if (buffer.byteLength) {
-          controller.enqueue(buffer)
-        }
-
-        queueMicrotask(() => readableStreamClose(controller))
+      pull () {},
+      start (c) {
+        controller = c
       },
-      start () {},
+      cancel () {},
       type: 'bytes'
     })
   }
@@ -22376,9 +23892,8 @@ function extractBody (object, keepalive = false) {
     // Set type to `application/x-www-form-urlencoded;charset=UTF-8`.
     type = 'application/x-www-form-urlencoded;charset=UTF-8'
   } else if (webidl.is.BufferSource(object)) {
-    source = isArrayBuffer(object)
-      ? new Uint8Array(object.slice())
-      : new Uint8Array(object.buffer.slice(object.byteOffset, object.byteOffset + object.byteLength))
+    // Set source to a copy of the bytes held by object.
+    source = webidl.util.getCopyOfBytesHeldByBufferSource(object)
   } else if (webidl.is.FormData(object)) {
     const boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, '0')}`
     const prefix = `--${boundary}\r\nContent-Disposition: form-data`
@@ -22481,45 +23996,36 @@ function extractBody (object, keepalive = false) {
 
   // 11. If source is a byte sequence, then set action to a
   // step that returns source and length to source’s length.
-  if (typeof source === 'string' || util.isBuffer(source)) {
-    length = Buffer.byteLength(source)
+  if (typeof source === 'string' || isUint8Array(source)) {
+    action = () => {
+      length = typeof source === 'string' ? Buffer.byteLength(source) : source.length
+      return source
+    }
   }
 
-  // 12. If action is non-null, then run these steps in in parallel:
+  // 12. If action is non-null, then run these steps in parallel:
   if (action != null) {
-    // Run action.
-    let iterator
-    stream = new ReadableStream({
-      start () {
-        iterator = action(object)[Symbol.asyncIterator]()
-      },
-      pull (controller) {
-        return iterator.next().then(({ value, done }) => {
-          if (done) {
-            // When running action is done, close stream.
-            queueMicrotask(() => {
-              controller.close()
-              controller.byobRequest?.respond(0)
-            })
-          } else {
-            // Whenever one or more bytes are available and stream is not errored,
-            // enqueue a Uint8Array wrapping an ArrayBuffer containing the available
-            // bytes into stream.
-            if (!isErrored(stream)) {
-              const buffer = new Uint8Array(value)
-              if (buffer.byteLength) {
-                controller.enqueue(buffer)
-              }
-            }
+    ;(async () => {
+      // 1. Run action.
+      const result = action()
+
+      // 2. Whenever one or more bytes are available and stream is not errored,
+      //    enqueue the result of creating a Uint8Array from the available bytes into stream.
+      const iterator = result?.[Symbol.asyncIterator]?.()
+      if (iterator) {
+        for await (const bytes of iterator) {
+          if (isErrored(stream)) break
+          if (bytes.length) {
+            controller.enqueue(new Uint8Array(bytes))
           }
-          return controller.desiredSize > 0
-        })
-      },
-      cancel (reason) {
-        return iterator.return()
-      },
-      type: 'bytes'
-    })
+        }
+      } else if (result?.length && !isErrored(stream)) {
+        controller.enqueue(typeof result === 'string' ? textEncoder.encode(result) : new Uint8Array(result))
+      }
+
+      // 3. When running action is done, close stream.
+      queueMicrotask(() => readableStreamClose(controller))
+    })()
   }
 
   // 13. Let body be a body whose stream is stream, source is source,
@@ -22704,16 +24210,12 @@ function consumeBody (object, convertBytesToJSValue, instance, getInternalState)
     return Promise.reject(e)
   }
 
-  const state = getInternalState(object)
+  object = getInternalState(object)
 
   // 1. If object is unusable, then return a promise rejected
   //    with a TypeError.
-  if (bodyUnusable(state)) {
+  if (bodyUnusable(object)) {
     return Promise.reject(new TypeError('Body is unusable: Body has already been read'))
-  }
-
-  if (state.aborted) {
-    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
   }
 
   // 2. Let promise be a new promise.
@@ -22736,14 +24238,14 @@ function consumeBody (object, convertBytesToJSValue, instance, getInternalState)
 
   // 5. If object’s body is null, then run successSteps with an
   //    empty byte sequence.
-  if (state.body == null) {
+  if (object.body == null) {
     successSteps(Buffer.allocUnsafe(0))
     return promise.promise
   }
 
   // 6. Otherwise, fully read object’s body given successSteps,
   //    errorSteps, and object’s relevant global object.
-  fullyReadBody(state.body, successSteps, errorSteps)
+  fullyReadBody(object.body, successSteps, errorSteps)
 
   // 7. Return promise.
   return promise.promise
@@ -25321,7 +26823,7 @@ function fetch (input, init = undefined) {
   if (requestObject.signal.aborted) {
     // 1. Abort the fetch() call with p, request, null, and
     //    requestObject’s signal’s abort reason.
-    abortFetch(p, request, null, requestObject.signal.reason)
+    abortFetch(p, request, null, requestObject.signal.reason, null)
 
     // 2. Return p.
     return p.promise
@@ -25364,7 +26866,7 @@ function fetch (input, init = undefined) {
 
       // 4. Abort the fetch() call with p, request, responseObject,
       //    and requestObject’s signal’s abort reason.
-      abortFetch(p, request, realResponse, requestObject.signal.reason)
+      abortFetch(p, request, realResponse, requestObject.signal.reason, controller.controller)
     }
   )
 
@@ -25391,7 +26893,7 @@ function fetch (input, init = undefined) {
       // 2. Abort the fetch() call with p, request, responseObject, and
       //    deserializedError.
 
-      abortFetch(p, request, responseObject, controller.serializedAbortReason)
+      abortFetch(p, request, responseObject, controller.serializedAbortReason, controller.controller)
       return
     }
 
@@ -25415,7 +26917,10 @@ function fetch (input, init = undefined) {
     request,
     processResponseEndOfBody: handleFetchDone,
     processResponse,
-    dispatcher: getRequestDispatcher(requestObject) // undici
+    dispatcher: getRequestDispatcher(requestObject), // undici
+    // Keep requestObject alive to prevent its AbortController from being GC'd
+    // See https://github.com/nodejs/undici/issues/4627
+    requestObject
   })
 
   // 14. Return p.
@@ -25491,7 +26996,7 @@ function finalizeAndReportTiming (response, initiatorType = 'other') {
 const markResourceTiming = performance.markResourceTiming
 
 // https://fetch.spec.whatwg.org/#abort-fetch
-function abortFetch (p, request, responseObject, error) {
+function abortFetch (p, request, responseObject, error, controller /* undici-specific */) {
   // 1. Reject promise with error.
   if (p) {
     // We might have already resolved the promise at this stage
@@ -25521,13 +27026,7 @@ function abortFetch (p, request, responseObject, error) {
   // 5. If response’s body is not null and is readable, then error response’s
   // body with error.
   if (response.body?.stream != null && isReadable(response.body.stream)) {
-    response.body.stream.cancel(error).catch((err) => {
-      if (err.code === 'ERR_INVALID_STATE') {
-        // Node bug?
-        return
-      }
-      throw err
-    })
+    controller.error(error)
   }
 }
 
@@ -25540,7 +27039,8 @@ function fetching ({
   processResponseEndOfBody,
   processResponseConsumeBody,
   useParallelQueue = false,
-  dispatcher = getGlobalDispatcher() // undici
+  dispatcher = getGlobalDispatcher(), // undici
+  requestObject = null // Keep alive to prevent AbortController GC, see #4627
 }) {
   // Ensure that the dispatcher is set accordingly
   assert(dispatcher)
@@ -25594,7 +27094,9 @@ function fetching ({
     processResponseConsumeBody,
     processResponseEndOfBody,
     taskDestination,
-    crossOriginIsolatedCapability
+    crossOriginIsolatedCapability,
+    // Keep requestObject alive to prevent its AbortController from being GC'd
+    requestObject
   }
 
   // 7. If request’s body is a byte sequence, then set request’s body to
@@ -26485,8 +27987,8 @@ function httpRedirectFetch (fetchParams, response) {
     request.headersList.delete('host', true)
   }
 
-  // 14. If request’s body is non-null, then set request’s body to the first return
-  // value of safely extracting request’s body’s source.
+  // 14. If request's body is non-null, then set request's body to the first return
+  // value of safely extracting request's body's source.
   if (request.body != null) {
     assert(request.body.source != null)
     request.body = safelyExtractBody(request.body.source)[0]
@@ -27298,7 +28800,7 @@ async function httpNetworkFetch (
 
     return new Promise((resolve, reject) => agent.dispatch(
       {
-        path: url.pathname + url.search,
+        path: url.href.slice(url.href.indexOf(url.host) + url.host.length, url.hash.length ? -url.hash.length : undefined),
         origin: url.origin,
         method: request.method,
         body: agent.isMockActive ? request.body && (request.body.source || request.body.stream) : body,
@@ -27470,6 +28972,41 @@ async function httpNetworkFetch (
           fetchParams.controller.terminate(error)
 
           reject(error)
+        },
+
+        onRequestUpgrade (_controller, status, headers, socket) {
+          // We need to support 200 for websocket over h2 as per RFC-8441
+          // Absence of session means H1
+          if ((socket.session != null && status !== 200) || (socket.session == null && status !== 101)) {
+            return false
+          }
+
+          const headersList = new HeadersList()
+
+          for (const [name, value] of Object.entries(headers)) {
+            if (value == null) {
+              continue
+            }
+
+            const headerName = name.toLowerCase()
+
+            if (Array.isArray(value)) {
+              for (const entry of value) {
+                headersList.append(headerName, String(entry), true)
+              }
+            } else {
+              headersList.append(headerName, String(value), true)
+            }
+          }
+
+          resolve({
+            status,
+            statusText: STATUS_CODES[status],
+            headersList,
+            socket
+          })
+
+          return true
         },
 
         onUpgrade (status, rawHeaders, socket) {
@@ -28878,7 +30415,8 @@ class Response {
     const clonedResponse = cloneResponse(this.#state)
 
     // Note: To re-register because of a new stream.
-    if (this.#state.body?.stream) {
+    // Don't set finalizers other than for fetch responses.
+    if (this.#state.urlList.length !== 0 && this.#state.body?.stream) {
       streamRegistry.register(this, new WeakRef(this.#state.body.stream))
     }
 
@@ -30722,7 +32260,7 @@ function hasAuthenticationEntry (request) {
  */
 function includesCredentials (url) {
   // A URL includes credentials if its username or password is not the empty string.
-  return !!(url.username && url.password)
+  return !!(url.username || url.password)
 }
 
 /**
@@ -31360,6 +32898,7 @@ module.exports = {
 
 
 
+const assert = __nccwpck_require__(4589)
 const { types, inspect } = __nccwpck_require__(7975)
 const { runtimeFeatures } = __nccwpck_require__(1650)
 
@@ -31811,6 +33350,9 @@ webidl.interfaceConverter = function (TypeCheck, name) {
 }
 
 webidl.dictionaryConverter = function (converters) {
+  // "For each dictionary member member declared on dictionary, in lexicographical order:"
+  converters.sort((a, b) => (a.key > b.key) - (a.key < b.key))
+
   return (dictionary, prefix, argument) => {
     const dict = {}
 
@@ -31900,6 +33442,57 @@ webidl.is.BufferSource = function (V) {
     ArrayBuffer.isView(V) &&
     types.isArrayBuffer(V.buffer)
   )
+}
+
+// https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy
+webidl.util.getCopyOfBytesHeldByBufferSource = function (bufferSource) {
+  // 1. Let jsBufferSource be the result of converting bufferSource to a JavaScript value.
+  const jsBufferSource = bufferSource
+
+  // 2. Let jsArrayBuffer be jsBufferSource.
+  let jsArrayBuffer = jsBufferSource
+
+  // 3. Let offset be 0.
+  let offset = 0
+
+  // 4. Let length be 0.
+  let length = 0
+
+  // 5. If jsBufferSource has a [[ViewedArrayBuffer]] internal slot, then:
+  if (types.isTypedArray(jsBufferSource) || types.isDataView(jsBufferSource)) {
+    // 5.1. Set jsArrayBuffer to jsBufferSource.[[ViewedArrayBuffer]].
+    jsArrayBuffer = jsBufferSource.buffer
+
+    // 5.2. Set offset to jsBufferSource.[[ByteOffset]].
+    offset = jsBufferSource.byteOffset
+
+    // 5.3. Set length to jsBufferSource.[[ByteLength]].
+    length = jsBufferSource.byteLength
+  } else {
+    // 6. Otherwise:
+
+    // 6.1. Assert: jsBufferSource is an ArrayBuffer or SharedArrayBuffer object.
+    assert(types.isAnyArrayBuffer(jsBufferSource))
+
+    // 6.2. Set length to jsBufferSource.[[ArrayBufferByteLength]].
+    length = jsBufferSource.byteLength
+  }
+
+  // 7. If IsDetachedBuffer(jsArrayBuffer) is true, then return the empty byte sequence.
+  if (jsArrayBuffer.detached) {
+    return new Uint8Array(0)
+  }
+
+  // 8. Let bytes be a new byte sequence of length equal to length.
+  const bytes = new Uint8Array(length)
+
+  // 9. For i in the range offset to offset + length − 1, inclusive,
+  //    set bytes[i − offset] to GetValueFromBuffer(jsArrayBuffer, i, Uint8, true, Unordered).
+  const view = new Uint8Array(jsArrayBuffer, offset, length)
+  bytes.set(view)
+
+  // 10. Return bytes.
+  return bytes
 }
 
 // https://webidl.spec.whatwg.org/#es-DOMString
@@ -33267,10 +34860,14 @@ module.exports = {
 
 const { createInflateRaw, Z_DEFAULT_WINDOWBITS } = __nccwpck_require__(8522)
 const { isValidClientWindowBits } = __nccwpck_require__(4528)
+const { MessageSizeExceededError } = __nccwpck_require__(852)
 
 const tail = Buffer.from([0x00, 0x00, 0xff, 0xff])
 const kBuffer = Symbol('kBuffer')
 const kLength = Symbol('kLength')
+
+// Default maximum decompressed message size: 4 MB
+const kDefaultMaxDecompressedSize = 4 * 1024 * 1024
 
 class PerMessageDeflate {
   /** @type {import('node:zlib').InflateRaw} */
@@ -33278,6 +34875,15 @@ class PerMessageDeflate {
 
   #options = {}
 
+  /** @type {boolean} */
+  #aborted = false
+
+  /** @type {Function|null} */
+  #currentCallback = null
+
+  /**
+   * @param {Map<string, string>} extensions
+   */
   constructor (extensions) {
     this.#options.serverNoContextTakeover = extensions.has('server_no_context_takeover')
     this.#options.serverMaxWindowBits = extensions.get('server_max_window_bits')
@@ -33288,6 +34894,11 @@ class PerMessageDeflate {
     // 1.  Append 4 octets of 0x00 0x00 0xff 0xff to the tail end of the
     //     payload of the message.
     // 2.  Decompress the resulting data using DEFLATE.
+
+    if (this.#aborted) {
+      callback(new MessageSizeExceededError())
+      return
+    }
 
     if (!this.#inflate) {
       let windowBits = Z_DEFAULT_WINDOWBITS
@@ -33301,13 +34912,37 @@ class PerMessageDeflate {
         windowBits = Number.parseInt(this.#options.serverMaxWindowBits)
       }
 
-      this.#inflate = createInflateRaw({ windowBits })
+      try {
+        this.#inflate = createInflateRaw({ windowBits })
+      } catch (err) {
+        callback(err)
+        return
+      }
       this.#inflate[kBuffer] = []
       this.#inflate[kLength] = 0
 
       this.#inflate.on('data', (data) => {
-        this.#inflate[kBuffer].push(data)
+        if (this.#aborted) {
+          return
+        }
+
         this.#inflate[kLength] += data.length
+
+        if (this.#inflate[kLength] > kDefaultMaxDecompressedSize) {
+          this.#aborted = true
+          this.#inflate.removeAllListeners()
+          this.#inflate.destroy()
+          this.#inflate = null
+
+          if (this.#currentCallback) {
+            const cb = this.#currentCallback
+            this.#currentCallback = null
+            cb(new MessageSizeExceededError())
+          }
+          return
+        }
+
+        this.#inflate[kBuffer].push(data)
       })
 
       this.#inflate.on('error', (err) => {
@@ -33316,16 +34951,22 @@ class PerMessageDeflate {
       })
     }
 
+    this.#currentCallback = callback
     this.#inflate.write(chunk)
     if (fin) {
       this.#inflate.write(tail)
     }
 
     this.#inflate.flush(() => {
+      if (this.#aborted || !this.#inflate) {
+        return
+      }
+
       const full = Buffer.concat(this.#inflate[kBuffer], this.#inflate[kLength])
 
       this.#inflate[kBuffer].length = 0
       this.#inflate[kLength] = 0
+      this.#currentCallback = null
 
       callback(null, full)
     })
@@ -33357,6 +34998,7 @@ const {
 const { failWebsocketConnection } = __nccwpck_require__(9332)
 const { WebsocketFrameSend } = __nccwpck_require__(6403)
 const { PerMessageDeflate } = __nccwpck_require__(3144)
+const { MessageSizeExceededError } = __nccwpck_require__(852)
 
 // This code was influenced by ws released under the MIT license.
 // Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
@@ -33380,6 +35022,10 @@ class ByteParser extends Writable {
   /** @type {import('./websocket').Handler} */
   #handler
 
+  /**
+   * @param {import('./websocket').Handler} handler
+   * @param {Map<string, string>|null} extensions
+   */
   constructor (handler, extensions) {
     super()
 
@@ -33522,6 +35168,7 @@ class ByteParser extends Writable {
 
         const buffer = this.consume(8)
         const upper = buffer.readUInt32BE(0)
+        const lower = buffer.readUInt32BE(4)
 
         // 2^31 is the maximum bytes an arraybuffer can contain
         // on 32-bit systems. Although, on 64-bit systems, this is
@@ -33529,14 +35176,12 @@ class ByteParser extends Writable {
         // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Errors/Invalid_array_length
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/common/globals.h;drc=1946212ac0100668f14eb9e2843bdd846e510a1e;bpv=1;bpt=1;l=1275
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array-buffer.h;l=34;drc=1946212ac0100668f14eb9e2843bdd846e510a1e
-        if (upper > 2 ** 31 - 1) {
+        if (upper !== 0 || lower > 2 ** 31 - 1) {
           failWebsocketConnection(this.#handler, 1009, 'Received payload length > 2^31 bytes.')
           return
         }
 
-        const lower = buffer.readUInt32BE(4)
-
-        this.#info.payloadLength = (upper << 8) + lower
+        this.#info.payloadLength = lower
         this.#state = parserStates.READ_DATA
       } else if (this.#state === parserStates.READ_DATA) {
         if (this.#byteOffset < this.#info.payloadLength) {
@@ -33564,7 +35209,9 @@ class ByteParser extends Writable {
           } else {
             this.#extensions.get('permessage-deflate').decompress(body, this.#info.fin, (error, data) => {
               if (error) {
-                failWebsocketConnection(this.#handler, 1007, error.message)
+                // Use 1009 (Message Too Big) for decompression size limit errors
+                const code = error instanceof MessageSizeExceededError ? 1009 : 1007
+                failWebsocketConnection(this.#handler, code, error.message)
                 return
               }
 
@@ -34751,6 +36398,12 @@ function parseExtensions (extensions) {
  * @returns {boolean}
  */
 function isValidClientWindowBits (value) {
+  // Must have at least one character
+  if (value.length === 0) {
+    return false
+  }
+
+  // Check all characters are ASCII digits
   for (let i = 0; i < value.length; i++) {
     const byte = value.charCodeAt(i)
 
@@ -34759,7 +36412,9 @@ function isValidClientWindowBits (value) {
     }
   }
 
-  return true
+  // Check numeric range: zlib requires windowBits in range 8-15
+  const num = Number.parseInt(value, 10)
+  return num >= 8 && num <= 15
 }
 
 /**
@@ -35322,7 +36977,7 @@ class WebSocket extends EventTarget {
    * @see https://websockets.spec.whatwg.org/#feedback-from-the-protocol
    */
   #onConnectionEstablished (response, parsedExtensions) {
-    // processResponse is called when the "response’s header list has been received and initialized."
+    // processResponse is called when the "response's header list has been received and initialized."
     // once this happens, the connection is open
     this.#handler.socket = response.socket
 
@@ -38537,6 +40192,24 @@ class SecureProxyConnectionError extends UndiciError {
   [kSecureProxyConnectionError] = true
 }
 
+const kMessageSizeExceededError = Symbol.for('undici.error.UND_ERR_WS_MESSAGE_SIZE_EXCEEDED')
+class MessageSizeExceededError extends UndiciError {
+  constructor (message) {
+    super(message)
+    this.name = 'MessageSizeExceededError'
+    this.message = message || 'Max decompressed message size exceeded'
+    this.code = 'UND_ERR_WS_MESSAGE_SIZE_EXCEEDED'
+  }
+
+  static [Symbol.hasInstance] (instance) {
+    return instance && instance[kMessageSizeExceededError] === true
+  }
+
+  get [kMessageSizeExceededError] () {
+    return true
+  }
+}
+
 module.exports = {
   AbortError,
   HTTPParserError,
@@ -38560,7 +40233,8 @@ module.exports = {
   ResponseExceededMaxSizeError,
   RequestRetryError,
   ResponseError,
-  SecureProxyConnectionError
+  SecureProxyConnectionError,
+  MessageSizeExceededError
 }
 
 
@@ -38635,6 +40309,10 @@ class Request {
 
     if (upgrade && typeof upgrade !== 'string') {
       throw new InvalidArgumentError('upgrade must be a string')
+    }
+
+    if (upgrade && !isValidHeaderValue(upgrade)) {
+      throw new InvalidArgumentError('invalid upgrade header')
     }
 
     if (headersTimeout != null && (!Number.isFinite(headersTimeout) || headersTimeout < 0)) {
@@ -38931,13 +40609,19 @@ function processHeader (request, key, val) {
     val = `${val}`
   }
 
-  if (request.host === null && headerName === 'host') {
+  if (headerName === 'host') {
+    if (request.host !== null) {
+      throw new InvalidArgumentError('duplicate host header')
+    }
     if (typeof val !== 'string') {
       throw new InvalidArgumentError('invalid host header')
     }
     // Consumed by Client
     request.host = val
-  } else if (request.contentLength === null && headerName === 'content-length') {
+  } else if (headerName === 'content-length') {
+    if (request.contentLength !== null) {
+      throw new InvalidArgumentError('duplicate content-length header')
+    }
     request.contentLength = parseInt(val, 10)
     if (!Number.isFinite(request.contentLength)) {
       throw new InvalidArgumentError('invalid content-length header')
@@ -61654,10 +63338,14 @@ module.exports = {
 
 const { createInflateRaw, Z_DEFAULT_WINDOWBITS } = __nccwpck_require__(8522)
 const { isValidClientWindowBits } = __nccwpck_require__(5298)
+const { MessageSizeExceededError } = __nccwpck_require__(774)
 
 const tail = Buffer.from([0x00, 0x00, 0xff, 0xff])
 const kBuffer = Symbol('kBuffer')
 const kLength = Symbol('kLength')
+
+// Default maximum decompressed message size: 4 MB
+const kDefaultMaxDecompressedSize = 4 * 1024 * 1024
 
 class PerMessageDeflate {
   /** @type {import('node:zlib').InflateRaw} */
@@ -61665,9 +63353,23 @@ class PerMessageDeflate {
 
   #options = {}
 
-  constructor (extensions) {
+  /** @type {number} */
+  #maxDecompressedSize
+
+  /** @type {boolean} */
+  #aborted = false
+
+  /** @type {Function|null} */
+  #currentCallback = null
+
+  /**
+   * @param {Map<string, string>} extensions
+   * @param {{ maxDecompressedMessageSize?: number }} [options]
+   */
+  constructor (extensions, options = {}) {
     this.#options.serverNoContextTakeover = extensions.has('server_no_context_takeover')
     this.#options.serverMaxWindowBits = extensions.get('server_max_window_bits')
+    this.#maxDecompressedSize = options.maxDecompressedMessageSize ?? kDefaultMaxDecompressedSize
   }
 
   decompress (chunk, fin, callback) {
@@ -61675,6 +63377,11 @@ class PerMessageDeflate {
     // 1.  Append 4 octets of 0x00 0x00 0xff 0xff to the tail end of the
     //     payload of the message.
     // 2.  Decompress the resulting data using DEFLATE.
+
+    if (this.#aborted) {
+      callback(new MessageSizeExceededError())
+      return
+    }
 
     if (!this.#inflate) {
       let windowBits = Z_DEFAULT_WINDOWBITS
@@ -61688,13 +63395,37 @@ class PerMessageDeflate {
         windowBits = Number.parseInt(this.#options.serverMaxWindowBits)
       }
 
-      this.#inflate = createInflateRaw({ windowBits })
+      try {
+        this.#inflate = createInflateRaw({ windowBits })
+      } catch (err) {
+        callback(err)
+        return
+      }
       this.#inflate[kBuffer] = []
       this.#inflate[kLength] = 0
 
       this.#inflate.on('data', (data) => {
-        this.#inflate[kBuffer].push(data)
+        if (this.#aborted) {
+          return
+        }
+
         this.#inflate[kLength] += data.length
+
+        if (this.#inflate[kLength] > this.#maxDecompressedSize) {
+          this.#aborted = true
+          this.#inflate.removeAllListeners()
+          this.#inflate.destroy()
+          this.#inflate = null
+
+          if (this.#currentCallback) {
+            const cb = this.#currentCallback
+            this.#currentCallback = null
+            cb(new MessageSizeExceededError())
+          }
+          return
+        }
+
+        this.#inflate[kBuffer].push(data)
       })
 
       this.#inflate.on('error', (err) => {
@@ -61703,16 +63434,22 @@ class PerMessageDeflate {
       })
     }
 
+    this.#currentCallback = callback
     this.#inflate.write(chunk)
     if (fin) {
       this.#inflate.write(tail)
     }
 
     this.#inflate.flush(() => {
+      if (this.#aborted || !this.#inflate) {
+        return
+      }
+
       const full = Buffer.concat(this.#inflate[kBuffer], this.#inflate[kLength])
 
       this.#inflate[kBuffer].length = 0
       this.#inflate[kLength] = 0
+      this.#currentCallback = null
 
       callback(null, full)
     })
@@ -61766,14 +63503,23 @@ class ByteParser extends Writable {
   /** @type {Map<string, PerMessageDeflate>} */
   #extensions
 
-  constructor (ws, extensions) {
+  /** @type {{ maxDecompressedMessageSize?: number }} */
+  #options
+
+  /**
+   * @param {import('./websocket').WebSocket} ws
+   * @param {Map<string, string>|null} extensions
+   * @param {{ maxDecompressedMessageSize?: number }} [options]
+   */
+  constructor (ws, extensions, options = {}) {
     super()
 
     this.ws = ws
     this.#extensions = extensions == null ? new Map() : extensions
+    this.#options = options
 
     if (this.#extensions.has('permessage-deflate')) {
-      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions))
+      this.#extensions.set('permessage-deflate', new PerMessageDeflate(extensions, options))
     }
   }
 
@@ -61908,6 +63654,7 @@ class ByteParser extends Writable {
 
         const buffer = this.consume(8)
         const upper = buffer.readUInt32BE(0)
+        const lower = buffer.readUInt32BE(4)
 
         // 2^31 is the maximum bytes an arraybuffer can contain
         // on 32-bit systems. Although, on 64-bit systems, this is
@@ -61915,14 +63662,12 @@ class ByteParser extends Writable {
         // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Errors/Invalid_array_length
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/common/globals.h;drc=1946212ac0100668f14eb9e2843bdd846e510a1e;bpv=1;bpt=1;l=1275
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array-buffer.h;l=34;drc=1946212ac0100668f14eb9e2843bdd846e510a1e
-        if (upper > 2 ** 31 - 1) {
+        if (upper !== 0 || lower > 2 ** 31 - 1) {
           failWebsocketConnection(this.ws, 'Received payload length > 2^31 bytes.')
           return
         }
 
-        const lower = buffer.readUInt32BE(4)
-
-        this.#info.payloadLength = (upper << 8) + lower
+        this.#info.payloadLength = lower
         this.#state = parserStates.READ_DATA
       } else if (this.#state === parserStates.READ_DATA) {
         if (this.#byteOffset < this.#info.payloadLength) {
@@ -61952,7 +63697,7 @@ class ByteParser extends Writable {
           } else {
             this.#extensions.get('permessage-deflate').decompress(body, this.#info.fin, (error, data) => {
               if (error) {
-                closeWebSocketConnection(this.ws, 1007, error.message, error.message.length)
+                failWebsocketConnection(this.ws, error.message)
                 return
               }
 
@@ -62556,6 +64301,12 @@ function parseExtensions (extensions) {
  * @param {string} value
  */
 function isValidClientWindowBits (value) {
+  // Must have at least one character
+  if (value.length === 0) {
+    return false
+  }
+
+  // Check all characters are ASCII digits
   for (let i = 0; i < value.length; i++) {
     const byte = value.charCodeAt(i)
 
@@ -62564,7 +64315,9 @@ function isValidClientWindowBits (value) {
     }
   }
 
-  return true
+  // Check numeric range: zlib requires windowBits in range 8-15
+  const num = Number.parseInt(value, 10)
+  return num >= 8 && num <= 15
 }
 
 // https://nodejs.org/api/intl.html#detecting-internationalization-support
@@ -62655,6 +64408,9 @@ class WebSocket extends EventTarget {
   /** @type {SendQueue} */
   #sendQueue
 
+  /** @type {{ maxDecompressedMessageSize?: number }} */
+  #options
+
   /**
    * @param {string} url
    * @param {string|string[]} protocols
@@ -62727,6 +64483,11 @@ class WebSocket extends EventTarget {
 
     // 10. Set this's url to urlRecord.
     this[kWebSocketURL] = new URL(urlRecord.href)
+
+    // Store options for later use (e.g., maxDecompressedMessageSize)
+    this.#options = {
+      maxDecompressedMessageSize: options.maxDecompressedMessageSize
+    }
 
     // 11. Let client be this's relevant settings object.
     const client = environmentSettingsObject.settingsObject
@@ -63042,11 +64803,11 @@ class WebSocket extends EventTarget {
    * @see https://websockets.spec.whatwg.org/#feedback-from-the-protocol
    */
   #onConnectionEstablished (response, parsedExtensions) {
-    // processResponse is called when the "response’s header list has been received and initialized."
+    // processResponse is called when the "response's header list has been received and initialized."
     // once this happens, the connection is open
     this[kResponse] = response
 
-    const parser = new ByteParser(this, parsedExtensions)
+    const parser = new ByteParser(this, parsedExtensions, this.#options)
     parser.on('drain', onParserDrain)
     parser.on('error', onParserError.bind(this))
 
@@ -63149,6 +64910,19 @@ webidl.converters.WebSocketInit = webidl.dictionaryConverter([
   {
     key: 'headers',
     converter: webidl.nullableConverter(webidl.converters.HeadersInit)
+  },
+  {
+    key: 'maxDecompressedMessageSize',
+    converter: webidl.nullableConverter((V) => {
+      V = webidl.converters['unsigned long long'](V)
+      if (V <= 0) {
+        throw webidl.errors.exception({
+          header: 'WebSocket constructor',
+          message: 'maxDecompressedMessageSize must be greater than 0'
+        })
+      }
+      return V
+    })
   }
 ])
 
