@@ -64,12 +64,6 @@ jobs:
       - name: Log github.ref
         run: echo '${{ github.ref }}'
 
-      - name: Fail if dist is not up to date, and we are not committing changes
-        if: ${{ steps.git-check.outputs.changed != '0' && !(startsWith(github.ref, 'refs/heads/dependabot/')) && github.event.inputs.update-dist != 'true' }}
-        run: |
-          echo "dist is not up to date. Please run the build and commit the changes. If you want to update the dist, please set the update-dist input to true or create a dependabot PR."
-          exit 1
-
       - name: do-while-not-queued step
         uses: ./ # Uses an action in the root directory
         with:
@@ -90,6 +84,12 @@ jobs:
             dist/
             package-lock.json
           retention-days: 1 # we don't need to keep these very long at all.
+
+      - name: Fail if dist is not up to date, and we are not committing changes
+        if: ${{ steps.git-check.outputs.changed != '0' && !(startsWith(github.ref, 'refs/heads/dependabot/')) && github.event.inputs.update-dist != 'true' }}
+        run: |
+          echo "dist is not up to date. Please run the build and commit the changes. If you want to update the dist, please set the update-dist input to true or create a dependabot PR."
+          exit 1
 
   commit:
     runs-on: ubuntu-latest
