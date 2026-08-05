@@ -45,7 +45,14 @@ jobs:
       - uses: Actions-R-Us/actions-tagger@330ddfac760021349fef7ff62b372f2f691c20fb # v2.0.3
         with:
           publish_latest_tag: true
-          prefer_branch_releases: true
+          # Use tags (not branches) for the major version ref (e.g. v2).
+          # A legacy `v2` *tag* from 2020 (pointing at a Node 12 commit) was
+          # shadowing the up-to-date `v2` *branch*: when both a tag and a
+          # branch share a name, GitHub Actions resolves `@v2` to the tag,
+          # so consumers were pinned to the old Node 12 commit and saw the
+          # Node 20/24 deprecation warning. Maintaining the major *tag*
+          # force-moves it to the latest release on every publish.
+          prefer_branch_releases: false
 
       - name: Update main.yml to match new tags
         run: |
