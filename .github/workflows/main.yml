@@ -19,16 +19,16 @@ jobs:
       contents: read
     outputs:
       changed: ${{ steps.git-check.outputs.changed }}
-    steps:
-      # Disable until we can get v2 updated.
-      # - name: Run Major
-      #  uses: boxofyellow/do-while-not-queued@v2 # MAJOR_VERSION_TAG
-      #  with:
-      #    command-line: 'echo'
-      #    args: 'hello-world'
-      #    workflow: ${{ github.WORKFLOW }}
-      #    max-runs: 3
-      #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:      
+      - name: Run Major
+        uses: boxofyellow/do-while-not-queued@v2 # MAJOR_VERSION_TAG
+        with:
+          command-line: 'echo'
+          args: 'hello-world'
+          workflow: ${{ github.WORKFLOW }}
+          max-runs: 3
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run Full Version
         uses: boxofyellow/do-while-not-queued@v2.0.43 # FULL_VERSION_TAG
         with:
