@@ -1,0 +1,66 @@
+name: Check pinned Node.js version
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-node-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare the pin with the latest stable release in its major
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=''
+          for workflow in .github/workflows/main.yml .github/workflows/versioning.yml; do
+            version=$(sed -nE "s/^[[:space:]]*node-version:[[:space:]]*'([0-9]+\.[0-9]+\.[0-9]+)'[[:space:]]+#[[:space:]]+NODE_VERSION_PIN[[:space:]]*$/\1/p" "$workflow")
+            marker_count=$(grep -c '# NODE_VERSION_PIN' "$workflow" || test "$?" -eq 1)
+            if [[ "$marker_count" != '1' || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error file=$workflow::Expected exactly one exact Node.js version marked with # NODE_VERSION_PIN."
+              exit 1
+            fi
+            if [[ -n "$pinned" && "$version" != "$pinned" ]]; then
+              echo "::error file=$workflow::Node.js pins differ between build and release workflows."
+              exit 1
+            fi
+            pinned="$version"
+          done
+
+          major="${pinned%%.*}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --connect-timeout 10 --max-time 60 \
+            https://nodejs.org/dist/index.json -o "$RUNNER_TEMP/node-releases.json"
+          latest=$(jq -er --arg major "$major" '
+            [.[] | select(.version | test("^v" + $major + "\\.[0-9]+\\.[0-9]+$"))
+             | select(.files | index("linux-x64"))]
+            | sort_by(.version | ltrimstr("v") | split(".") | map(tonumber))
+            | last
+            | .version
+            | strings
+            | ltrimstr("v")
+          ' "$RUNNER_TEMP/node-releases.json")
+
+          {
+            echo "## Pinned Node.js version"
+            echo
+            echo "Pinned: $pinned"
+            echo "Latest stable Node.js $major release: $latest"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$pinned" != "$latest" ]]; then
+            echo "::error::Node.js $latest is available; the workflows pin $pinned. Update both NODE_VERSION_PIN values, rebuild dist, and commit the changes."
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "Update both NODE_VERSION_PIN values, rebuild dist, and commit the changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "The Node.js pin is up to date." | tee -a "$GITHUB_STEP_SUMMARY"

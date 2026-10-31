@@ -60,3 +60,21 @@ with:
     # Use the provided github variable
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+# Maintaining the build Node.js version
+
+The build and release workflows pin the same exact Node.js version using
+`# NODE_VERSION_PIN` comments, following the existing `# MAJOR_VERSION_TAG`
+marker pattern. Keep both pins in sync.
+
+The `Check pinned Node.js version` workflow runs every Monday at 09:17 UTC and
+can also be run manually. It compares the pin with the latest stable release
+in the same major version from `https://nodejs.org/dist/index.json`. It fails
+with an annotation and job summary when an update is available or the pins
+are invalid or inconsistent. It does not update files automatically or switch
+to a newer major version.
+
+When updating, change both marked pins, rebuild `dist` using the pinned Node.js
+version, and commit the updated pins and generated files together. This pin
+controls the build runtime, not the runner-provided `node24` runtime used by
+consumers of this action.
