@@ -7,6 +7,11 @@ on:
 
 permissions:
   contents: read
+  issues: write
+
+concurrency:
+  group: node-version-check-issues
+  cancel-in-progress: false
 
 jobs:
   check-node-version:
@@ -20,16 +25,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          {
           pinned=''
           for workflow in .github/workflows/main.yml .github/workflows/versioning.yml; do
             version=$(sed -nE "s/^[[:space:]]*node-version:[[:space:]]*'([0-9]+\.[0-9]+\.[0-9]+)'[[:space:]]+#[[:space:]]+NODE_VERSION_PIN[[:space:]]*$/\1/p" "$workflow")
             marker_count=$(grep -c '# NODE_VERSION_PIN' "$workflow" || test "$?" -eq 1)
             if [[ "$marker_count" != '1' || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error file=$workflow::Expected exactly one exact Node.js version marked with # NODE_VERSION_PIN."
+              printf 'Workflow: %s; marker count: %s; extracted version: %s\n' "$workflow" "$marker_count" "$version"
               exit 1
             fi
             if [[ -n "$pinned" && "$version" != "$pinned" ]]; then
               echo "::error file=$workflow::Node.js pins differ between build and release workflows."
+              echo "main.yml pins $pinned; $workflow pins $version."
               exit 1
             fi
             pinned="$version"
@@ -54,7 +62,7 @@ jobs:
             echo
             echo "Pinned: $pinned"
             echo "Latest stable Node.js $major release: $latest"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
           if [[ "$pinned" != "$latest" ]]; then
             echo "::error::Node.js $latest is available; the workflows pin $pinned. Update both NODE_VERSION_PIN values, rebuild dist, and commit the changes."
@@ -64,3 +72,53 @@ jobs:
           fi
 
           echo "The Node.js pin is up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee "$RUNNER_TEMP/node-version-check.log"
+
+      - name: Create or comment on the tracking issue
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          label='node-version-check'
+          gh label create "$label" --color 'D93F0B' \
+            --description 'Problems found by the pinned Node.js version check' --force
+
+          {
+            echo "## Node.js version check found a problem"
+            echo
+            echo "Run: $RUN_URL"
+            echo "Commit: $RUN_SHA"
+            echo
+            echo '### Check output'
+            echo '```text'
+            if [[ -f "$RUNNER_TEMP/node-version-check.log" ]]; then
+              tail -c 20000 "$RUNNER_TEMP/node-version-check.log"
+            else
+              echo 'The job failed before the version check produced a log. See the linked run for details.'
+            fi
+            echo
+            echo '```'
+            echo
+            echo 'Resolve the reported problem; for a version update, change both NODE_VERSION_PIN values, rebuild dist, and commit the changes.'
+          } > "$RUNNER_TEMP/node-version-issue.md"
+
+          issues=$(gh api --method GET --paginate "repos/$GH_REPO/issues" \
+            -f state=open -f labels="$label" -f per_page=100)
+          issue=$(jq -sr '
+            [ .[][] | select(.pull_request == null) ]
+            | sort_by(.number)
+            | first
+            | .number // empty
+          ' <<< "$issues")
+
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --body-file "$RUNNER_TEMP/node-version-issue.md"
+          else
+            gh issue create --title 'Pinned Node.js version check needs attention' \
+              --label "$label" --body-file "$RUNNER_TEMP/node-version-issue.md"
+          fi
