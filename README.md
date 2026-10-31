@@ -71,8 +71,9 @@ The `Check pinned Node.js version` workflow runs every Monday at 09:17 UTC and
 can also be run manually. It compares the pin with the latest stable release
 in the same major version from `https://nodejs.org/dist/index.json`. It fails
 with an annotation and job summary when an update is available or the pins
-are invalid or inconsistent. On failure (including download or checkout errors),
-it creates an issue labeled `node-version-check`, or appends a comment to the
+are invalid or inconsistent. Whenever the check does not succeed (failure,
+cancellation or timeout), a separate reporting job creates an issue labeled
+`node-version-check`, or appends a comment to the
 oldest open issue with that label. Each report includes the run link, commit,
 and check output when available. Closed issues are not reused; healthy runs do
 not create issues or comments. Runs are serialized to avoid duplicate issues.
