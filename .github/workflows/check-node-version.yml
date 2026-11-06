@@ -1,0 +1,149 @@
+name: Check pinned Node.js version
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-node-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare the pin with the latest stable release in its major
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+          pinned=''
+          for workflow in .github/workflows/main.yml .github/workflows/versioning.yml; do
+            version=$(sed -nE "s/^[[:space:]]*node-version:[[:space:]]*'([0-9]+\.[0-9]+\.[0-9]+)'[[:space:]]+#[[:space:]]+NODE_VERSION_PIN[[:space:]]*$/\1/p" "$workflow")
+            marker_count=$(grep -c '# NODE_VERSION_PIN' "$workflow" || test "$?" -eq 1)
+            if [[ "$marker_count" != '1' || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error file=$workflow::Expected exactly one exact Node.js version marked with # NODE_VERSION_PIN."
+              printf 'Workflow: %s; marker count: %s; extracted version: %s\n' "$workflow" "$marker_count" "$version"
+              exit 1
+            fi
+            if [[ -n "$pinned" && "$version" != "$pinned" ]]; then
+              echo "::error file=$workflow::Node.js pins differ between build and release workflows."
+              echo "main.yml pins $pinned; $workflow pins $version."
+              exit 1
+            fi
+            pinned="$version"
+          done
+
+          major="${pinned%%.*}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --connect-timeout 10 --max-time 60 \
+            https://nodejs.org/dist/index.json -o "$RUNNER_TEMP/node-releases.json"
+          latest=$(jq -er --arg major "$major" '
+            [.[] | select(.version | test("^v" + $major + "\\.[0-9]+\\.[0-9]+$"))
+             | select(.files | index("linux-x64"))]
+            | sort_by(.version | ltrimstr("v") | split(".") | map(tonumber))
+            | last
+            | .version
+            | strings
+            | ltrimstr("v")
+          ' "$RUNNER_TEMP/node-releases.json")
+
+          {
+            echo "## Pinned Node.js version"
+            echo
+            echo "Pinned: $pinned"
+            echo "Latest stable Node.js $major release: $latest"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$pinned" != "$latest" ]]; then
+            echo "::error::Node.js $latest is available; the workflows pin $pinned. Update both NODE_VERSION_PIN values, rebuild dist, and commit the changes."
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "Update both NODE_VERSION_PIN values, rebuild dist, and commit the changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "The Node.js pin is up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+          } 2>&1 | tee "$RUNNER_TEMP/node-version-check.log"
+
+      - name: Upload check output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-version-check-output
+          path: ${{ runner.temp }}/node-version-check.log
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Separate job so failures, cancellations and timeouts of the check are all reported.
+  report-problems:
+    needs: check-node-version
+    if: ${{ always() && needs.check-node-version.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    concurrency:
+      group: node-version-check-issues
+      cancel-in-progress: false
+    steps:
+      - name: Download check output
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: node-version-check-output
+          path: ${{ runner.temp }}/check-output
+
+      - name: Create or comment on the tracking issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          RUN_SHA: ${{ github.sha }}
+          CHECK_RESULT: ${{ needs.check-node-version.result }}
+        run: |
+          set -euo pipefail
+          label='node-version-check'
+          log="$RUNNER_TEMP/check-output/node-version-check.log"
+          gh label create "$label" --color 'D93F0B' \
+            --description 'Problems found by the pinned Node.js version check' --force
+
+          {
+            echo "## Node.js version check did not succeed"
+            echo
+            echo "Run: $RUN_URL"
+            echo "Commit: $RUN_SHA"
+            echo "Check result: $CHECK_RESULT"
+            echo
+            echo '### Check output'
+            echo '```text'
+            if [[ -s "$log" ]]; then
+              tail -c 20000 "$log"
+            else
+              echo 'No check output was captured. See the linked run for details.'
+            fi
+            echo
+            echo '```'
+            echo
+            echo 'Resolve the reported problem; for a version update, change both NODE_VERSION_PIN values, rebuild dist, and commit the changes.'
+          } > "$RUNNER_TEMP/node-version-issue.md"
+
+          issues=$(gh api --method GET --paginate "repos/$GH_REPO/issues" \
+            -f state=open -f labels="$label" -f per_page=100)
+          issue=$(jq -sr '
+            [ .[][] | select(.pull_request == null) ]
+            | sort_by(.number)
+            | first
+            | .number // empty
+          ' <<< "$issues")
+
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --body-file "$RUNNER_TEMP/node-version-issue.md"
+          else
+            gh issue create --title 'Pinned Node.js version check needs attention' \
+              --label "$label" --body-file "$RUNNER_TEMP/node-version-issue.md"
+          fi
